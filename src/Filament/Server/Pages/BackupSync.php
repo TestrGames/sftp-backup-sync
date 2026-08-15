@@ -17,7 +17,6 @@ use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
-use Filament\Support\Enums\Alignment;
 use Lisak\SftpBackupSync\Jobs\PushBackupToSftp;
 use Lisak\SftpBackupSync\Models\BackupSyncLog;
 use Lisak\SftpBackupSync\Models\SftpBackupTarget;
@@ -54,6 +53,25 @@ class BackupSync extends ServerFormPage
         }
     }
 
+    /**
+     * @return array<Action>
+     */
+    protected function getDefaultHeaderActions(): array
+    {
+        // Deliberately header actions, not Section::footerActions() -- the bottom
+        // action bar has a known CSS positioning bug on this panel version (see
+        // pelican-dev/panel#2501, "Fix invisible save button on CreateBackupHost
+        // page": same symptom, same fix -- move the actions to the header).
+        return [
+            $this->syncMissingAction(),
+            $this->connectAction(),
+            $this->disconnectAction(),
+            Action::make('save')
+                ->label('Save')
+                ->action('saveTarget'),
+        ];
+    }
+
     public function form(Schema $schema): Schema
     {
         return parent::form($schema)
@@ -61,15 +79,6 @@ class BackupSync extends ServerFormPage
                 Section::make('Backup Sync')
                     ->description('Automatically copy every completed backup of this server to your own destination — nobody else on this panel can see or use this configuration.')
                     ->columnSpanFull()
-                    ->footerActions([
-                        $this->syncMissingAction(),
-                        $this->connectAction(),
-                        $this->disconnectAction(),
-                        Action::make('save')
-                            ->label('Save')
-                            ->action('saveTarget'),
-                    ])
-                    ->footerActionsAlignment(Alignment::Right)
                     ->columns(2)
                     ->schema([
                         Toggle::make('enabled')
@@ -298,11 +307,9 @@ class BackupSync extends ServerFormPage
     private function currentProtocol(): ?string
     {
         // Deliberately not `Get $get` injection here -- that's confirmed reliable
-        // inside *field* closures (visible()/required() on the schema itself),
-        // but Action closures resolve utility injection through a separate path
-        // that doesn't reliably support it, and a failed injection here was
-        // silently blanking the whole footerActions row (Save included).
-        // $this->form is always available; reading raw state sidesteps that.
+        // inside *field* closures (visible()/required() on the schema itself), but
+        // support for it in Action closures is less certain, so this reads the
+        // live value directly instead. $this->form is always available.
         return $this->form->getRawState()['protocol'] ?? null;
     }
 
@@ -314,7 +321,7 @@ class BackupSync extends ServerFormPage
             return 'Connected' . ($target->oauth_account_label ? " as {$target->oauth_account_label}." : '.');
         }
 
-        return 'Not connected yet — click "Connect" below, then Save once you\'re back here.';
+        return 'Not connected yet — click "Connect" above, then Save once you\'re back here.';
     }
 
     private function oauthProviderLabel(?string $protocol): string

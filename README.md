@@ -11,6 +11,15 @@ server.
 
 ## How it works
 
+- Save / "Sync missing backups" / Connect / Disconnect are rendered as
+  **page header actions** (`BackupSync::getDefaultHeaderActions()`),
+  not `Section::footerActions()`. The bottom action bar has a known CSS
+  positioning bug on this panel version — it renders (correctly,
+  functionally) but visually ends up pushed down near the page footer,
+  easy to miss entirely. Same symptom, same fix Pelican core itself
+  shipped for `CreateBackupHost` in
+  [pelican-dev/panel#2501](https://github.com/pelican-dev/panel/pull/2501):
+  move the actions to the header instead of fighting the CSS.
 - Panel doesn't create backups itself — Wings does, then reports back
   via a webhook that fires the Laravel event `App\Events\Server\BackupCompleted`.
   This plugin listens for that event (`src/Listeners/QueueSftpBackupForward.php`)

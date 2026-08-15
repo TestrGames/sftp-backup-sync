@@ -2,7 +2,7 @@
     "id": "sftp-backup-sync",
     "name": "SFTP Backup Sync",
     "author": "Lisak",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "description": "Lets each server owner configure their own SFTP, WebDAV, OneDrive or Google Drive destination and automatically copies every completed backup there — fully self-service, no admin setup per server.",
     "category": "plugin",
     "url": "https://github.com/TestrGames/sftp-backup-sync",
