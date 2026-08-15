@@ -18,6 +18,7 @@ use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\HtmlString;
 use Lisak\SftpBackupSync\Jobs\PushBackupToSftp;
 use Lisak\SftpBackupSync\Models\BackupSyncLog;
 use Lisak\SftpBackupSync\Models\SftpBackupTarget;
@@ -270,6 +271,11 @@ class BackupSync extends ServerFormPage
     }
 
     private function actionsBarHtml(): Htmlable
+    {
+        return new HtmlString($this->actionsBarBladeString());
+    }
+
+    private function actionsBarBladeString(): string
     {
         // Based on the persisted target, not live/unsaved form state ($this->form
         // isn't resolvable yet here -- this runs while form() is still building
