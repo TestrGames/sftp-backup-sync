@@ -264,12 +264,12 @@ class BackupSync extends ServerFormPage
     protected function connectAction(): Action
     {
         return Action::make('connect_oauth')
-            ->label(fn (Get $get) => 'Connect ' . $this->oauthProviderLabel($get('protocol')))
+            ->label(fn () => 'Connect ' . $this->oauthProviderLabel($this->currentProtocol()))
             ->color('gray')
-            ->visible(fn (Get $get) => in_array($get('protocol'), CloudOAuthProviderFactory::oauthProtocols(), true)
+            ->visible(fn () => in_array($this->currentProtocol(), CloudOAuthProviderFactory::oauthProtocols(), true)
                 && !$this->currentTarget()?->oauth_access_token)
-            ->url(fn (Get $get) => route('sftp-backup-sync.connect', [
-                'protocol' => $get('protocol'),
+            ->url(fn () => route('sftp-backup-sync.connect', [
+                'protocol' => $this->currentProtocol(),
                 'server' => $this->getRecord(),
             ]))
             ->openUrlInNewTab(false);
@@ -281,7 +281,7 @@ class BackupSync extends ServerFormPage
             ->label('Disconnect')
             ->color('danger')
             ->requiresConfirmation()
-            ->visible(fn (Get $get) => in_array($get('protocol'), CloudOAuthProviderFactory::oauthProtocols(), true)
+            ->visible(fn () => in_array($this->currentProtocol(), CloudOAuthProviderFactory::oauthProtocols(), true)
                 && (bool) $this->currentTarget()?->oauth_access_token)
             ->action(function () {
                 $this->currentTarget()?->update([
@@ -293,6 +293,17 @@ class BackupSync extends ServerFormPage
 
                 Notification::make()->title('Disconnected.')->success()->send();
             });
+    }
+
+    private function currentProtocol(): ?string
+    {
+        // Deliberately not `Get $get` injection here -- that's confirmed reliable
+        // inside *field* closures (visible()/required() on the schema itself),
+        // but Action closures resolve utility injection through a separate path
+        // that doesn't reliably support it, and a failed injection here was
+        // silently blanking the whole footerActions row (Save included).
+        // $this->form is always available; reading raw state sidesteps that.
+        return $this->form->getRawState()['protocol'] ?? null;
     }
 
     private function oauthStatusText(): string
