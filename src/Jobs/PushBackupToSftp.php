@@ -198,6 +198,9 @@ class PushBackupToSftp implements ShouldQueue
             'password' => $target->password,
         ]);
 
-        return new Filesystem(new WebDAVAdapter($client, $target->remote_path ?: ''));
+        // Flysystem prefixes are relative to baseUri; a leading slash here can
+        // produce a doubled slash when joined ("/testrr" + "/test" = "...testrr//test"),
+        // which some WebDAV servers/proxies route unpredictably instead of a clean 404.
+        return new Filesystem(new WebDAVAdapter($client, trim($target->remote_path ?: '', '/')));
     }
 }
