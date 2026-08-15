@@ -64,6 +64,8 @@ class BackupSync extends ServerFormPage
                     ->columnSpanFull()
                     ->columns(2)
                     ->schema([
+                        $this->statusPanelHtml(),
+
                         Toggle::make('enabled')
                             ->label('Forward backups')
                             ->columnSpanFull(),
@@ -268,6 +270,84 @@ class BackupSync extends ServerFormPage
         ]);
 
         Notification::make()->title('Disconnected.')->success()->send();
+    }
+
+    private function statusPanelHtml(): Htmlable
+    {
+        return new HtmlString($this->statusPanelBladeString());
+    }
+
+    private function statusPanelBladeString(): string
+    {
+        $target = $this->currentTarget();
+
+        $rows = [];
+
+        if ($target) {
+            $entries = BackupSyncLog::query()
+                ->where('sftp_backup_target_id', $target->id)
+                ->with('backup')
+                ->latest('id')
+                ->limit(5)
+                ->get();
+
+            foreach ($entries as $entry) {
+                $rows[] = [
+                    'label' => $entry->backup?->name ?: ('Backup #' . $entry->backup_id),
+                    'status' => $entry->status,
+                    'error' => $entry->error,
+                    'when' => $entry->updated_at?->diffForHumans() ?? '',
+                ];
+            }
+        }
+
+        return Blade::render(<<<'HTML'
+        <div style="border:1px solid #52525b; border-radius:.5rem; padding:1rem; margin-bottom:.5rem;">
+            <div style="font-weight:600; margin-bottom:.5rem;">Sync status</div>
+
+            @if ($target && $target->last_error)
+                <div style="color:#f87171; margin-bottom:.5rem;">
+                    ⚠ Last attempt failed: {{ $target->last_error }}
+                </div>
+            @endif
+
+            @if ($target && $target->last_synced_at)
+                <div style="opacity:.75; margin-bottom:.5rem;">
+                    ✓ Last successful sync: {{ $target->last_synced_at->diffForHumans() }} ({{ $target->last_synced_at->format('Y-m-d H:i:s') }})
+                </div>
+            @elseif ($target)
+                <div style="opacity:.75; margin-bottom:.5rem;">No successful sync yet.</div>
+            @else
+                <div style="opacity:.75; margin-bottom:.5rem;">Not configured yet -- fill in the form below and Save.</div>
+            @endif
+
+            @if (count($rows))
+                <table style="width:100%; border-collapse:collapse; margin-top:.5rem; font-size:.875rem;">
+                    <thead>
+                        <tr style="text-align:left; opacity:.6;">
+                            <th style="padding:.25rem;">Backup</th>
+                            <th style="padding:.25rem;">Status</th>
+                            <th style="padding:.25rem;">When</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach ($rows as $row)
+                            <tr style="border-top:1px solid #3f3f46;">
+                                <td style="padding:.25rem;">{{ $row['label'] }}</td>
+                                <td style="padding:.25rem; color: {{ $row['status'] === 'success' ? '#4ade80' : ($row['status'] === 'failed' ? '#f87171' : 'inherit') }};" title="{{ $row['error'] }}">
+                                    {{ ucfirst($row['status']) }}
+                                </td>
+                                <td style="padding:.25rem; opacity:.75;">{{ $row['when'] }}</td>
+                            </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            @endif
+        </div>
+        HTML, [
+            'target' => $target,
+            'rows' => $rows,
+        ]);
     }
 
     private function actionsBarHtml(): Htmlable
