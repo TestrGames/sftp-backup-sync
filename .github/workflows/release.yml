@@ -52,30 +52,39 @@ jobs:
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes
 
-      - name: Update update.json
-        run: |
-          DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.version.outputs.tag }}/${{ steps.build.outputs.plugin_id }}.zip"
-          jq --arg v "${{ steps.version.outputs.version }}" --arg u "$DOWNLOAD_URL" \
-            '.["*"].version = $v | .["*"].download_url = $u' update.json > update.json.tmp
-          mv update.json.tmp update.json
-
       - name: Commit update.json back to main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add update.json
-          git diff --cached --quiet || git commit -m "chore: update.json for ${{ steps.version.outputs.tag }}"
 
-          # main can have moved (e.g. a manual push) since this run's checkout --
-          # rebase our update.json commit on top and retry a few times before
-          # giving up, instead of failing outright on a plain push race.
+          DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.version.outputs.tag }}/${{ steps.build.outputs.plugin_id }}.zip"
+
+          # main can have moved (e.g. a manual push) since this run's checkout, and
+          # the runner's shallow clone has no shared history with a moved main to
+          # rebase onto -- so each attempt starts fresh from main's current tip and
+          # re-applies the (fully deterministic, machine-generated) jq edit on top
+          # of it, rather than trying to reconcile a divergent commit.
           for attempt in 1 2 3 4 5; do
-            if git push origin HEAD:main; then
+            git fetch origin main
+            git checkout -B release-update-json origin/main
+
+            jq --arg v "${{ steps.version.outputs.version }}" --arg u "$DOWNLOAD_URL" \
+              '.["*"].version = $v | .["*"].download_url = $u' update.json > update.json.tmp
+            mv update.json.tmp update.json
+
+            git add update.json
+            if git diff --cached --quiet; then
+              echo "update.json already up to date."
               exit 0
             fi
+
+            git commit -m "chore: update.json for ${{ steps.version.outputs.tag }}"
+
+            if git push origin release-update-json:main; then
+              exit 0
+            fi
+
             echo "Push rejected, retrying (attempt $attempt)..."
-            git fetch origin main
-            git rebase origin/main
           done
 
           echo "Could not push update.json after retries."
