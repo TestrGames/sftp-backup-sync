@@ -34,9 +34,15 @@ server.
   link the same way Pelican's own restore/download flow does
   (`BackupAdapterService::get($backup->backupHost->schema)->getDownloadLink()`),
   streams the backup to a temp file, then streams it up to the
-  configured destination — via `league/flysystem-sftp-v3` for SFTP or
-  `league/flysystem-webdav` for WebDAV. Nothing is ever fully buffered
-  in memory.
+  configured destination. SFTP uses `league/flysystem-sftp-v3`. WebDAV
+  is plain HTTP (`MKCOL` per path segment, then `PUT`) via Laravel's
+  `Http` client, not a library — `league/flysystem-webdav`
+  (`Sabre\DAV\Client` underneath) reliably mis-handled directory
+  creation against a real Nextcloud instance in testing (misreporting
+  "already exists" as a hard failure, or vice versa, with no useful
+  underlying cause exposed), while plain `curl` against the exact same
+  URLs always worked — so that's exactly what this does instead. Nothing
+  is ever fully buffered in memory for either protocol.
 - Per-server config lives in its own table (`sftp_backup_targets`), one
   row per server, with `password` / `private_key` / `passphrase` stored
   using Laravel's `encrypted` Eloquent cast (AES via `APP_KEY` — same

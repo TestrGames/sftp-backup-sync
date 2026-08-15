@@ -14,13 +14,11 @@ use Illuminate\Support\Facades\Log;
 use League\Flysystem\Filesystem;
 use League\Flysystem\PhpseclibV3\SftpAdapter;
 use League\Flysystem\PhpseclibV3\SftpConnectionProvider;
-use League\Flysystem\WebDAV\WebDAVAdapter;
 use Lisak\SftpBackupSync\Models\BackupSyncLog;
 use Lisak\SftpBackupSync\Models\SftpBackupTarget;
 use Lisak\SftpBackupSync\Support\OAuth\CloudOAuthProvider;
 use Lisak\SftpBackupSync\Support\OAuth\CloudOAuthProviderFactory;
 use RuntimeException;
-use Sabre\DAV\Client as WebDAVClient;
 use Throwable;
 
 class PushBackupToSftp implements ShouldQueue
@@ -70,8 +68,10 @@ class PushBackupToSftp implements ShouldQueue
 
             if (in_array($target->protocol, CloudOAuthProviderFactory::oauthProtocols(), true)) {
                 $this->pushViaOAuth($target, $tmpPath);
+            } elseif ($target->protocol === 'webdav') {
+                $this->pushViaWebDav($target, $tmpPath);
             } else {
-                $this->pushViaFilesystem($target, $tmpPath);
+                $this->pushViaSftp($target, $tmpPath);
             }
 
             $log->update(['status' => 'success', 'error' => null, 'synced_at' => now()]);
@@ -93,12 +93,10 @@ class PushBackupToSftp implements ShouldQueue
     }
 
     /**
-     * Flysystem adapters (WebDAV in particular) tend to throw a generic
-     * wrapper ("Unable to check existence for: ...") whose own message
-     * says nothing useful -- the actual cause (auth failure, timeout,
-     * TLS error, wrong path) lives one or more levels down in
-     * getPrevious(). Walk the whole chain so the stored error is
-     * actually actionable.
+     * Flysystem adapters tend to throw a generic wrapper whose own message
+     * says nothing useful -- the actual cause often lives one or more
+     * levels down in getPrevious(). Walk the whole chain so the stored
+     * error is actually actionable.
      */
     private function describeException(Throwable $exception): string
     {
@@ -113,33 +111,90 @@ class PushBackupToSftp implements ShouldQueue
         return implode(' | caused by: ', $parts);
     }
 
-    private function pushViaFilesystem(SftpBackupTarget $target, string $tmpPath): void
+    private function pushViaSftp(SftpBackupTarget $target, string $tmpPath): void
     {
-        $filesystem = $this->buildFilesystem($target);
+        $provider = new SftpConnectionProvider(
+            host: $target->host,
+            username: $target->username,
+            password: $target->auth_method === 'password' ? $target->password : null,
+            privateKey: $target->auth_method === 'private_key' ? $target->private_key : null,
+            passphrase: $target->passphrase ?: null,
+            port: $target->port,
+            timeout: 30,
+        );
+
+        $filesystem = new Filesystem(new SftpAdapter($provider, $target->remote_path ?: '/'));
 
         $stream = fopen($tmpPath, 'r');
         throw_unless($stream, new RuntimeException('Could not open downloaded backup for reading.'));
 
         try {
             $remotePath = trim($this->backup->server->uuid, '/') . '/' . $this->backup->uuid . '.tar.gz';
-
-            if ($target->protocol === 'webdav') {
-                // WebDAVAdapter's own createDirectory() mis-handles the case where a
-                // path segment being auto-created is exactly equal to the adapter's
-                // configured prefix -- stripDirectoryPrefix() reduces it to an empty
-                // string, and the existence check against that empty path doesn't
-                // reliably detect an already-existing directory. Side-step it by not
-                // giving the adapter a prefix at all; fold remote_path into the write
-                // path instead, same as the OneDrive/Google Drive providers already do.
-                $remotePath = ltrim(trim($target->remote_path ?: '', '/') . '/' . $remotePath, '/');
-            }
-
             $filesystem->writeStream($remotePath, $stream);
         } finally {
             if (is_resource($stream)) {
                 fclose($stream);
             }
         }
+    }
+
+    /**
+     * Deliberately raw HTTP (MKCOL + PUT), not league/flysystem-webdav. That
+     * library's WebDAVAdapter::createDirectory() reliably failed against a
+     * real Nextcloud instance during testing (mis-detecting/mis-creating an
+     * already-existing directory, with no useful underlying cause exposed) --
+     * plain curl against the exact same URLs worked fine. This does the same
+     * two requests curl was verified to succeed with: create each path
+     * segment via MKCOL (tolerating "already exists"), then PUT the file.
+     */
+    private function pushViaWebDav(SftpBackupTarget $target, string $tmpPath): void
+    {
+        $baseUri = rtrim((string) $target->base_url, '/');
+
+        $segments = array_values(array_filter(
+            explode('/', trim($target->remote_path ?: '', '/') . '/' . trim($this->backup->server->uuid, '/')),
+            fn (string $segment) => $segment !== '',
+        ));
+
+        $path = '';
+        foreach ($segments as $segment) {
+            $path .= '/' . rawurlencode($segment);
+            $this->webDavRequest($target, 'MKCOL', $baseUri . $path . '/', [200, 201, 405]);
+        }
+
+        $fileUrl = $baseUri . $path . '/' . rawurlencode($this->backup->uuid . '.tar.gz');
+
+        $stream = fopen($tmpPath, 'r');
+        throw_unless($stream, new RuntimeException('Could not open downloaded backup for reading.'));
+
+        try {
+            $response = Http::withBasicAuth((string) $target->username, (string) $target->password)
+                ->withBody($stream, 'application/octet-stream')
+                ->timeout(0)
+                ->send('PUT', $fileUrl);
+
+            throw_unless(
+                $response->successful(),
+                new RuntimeException("Could not upload backup via WebDAV: HTTP {$response->status()} " . $response->body()),
+            );
+        } finally {
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
+        }
+    }
+
+    /** @param int[] $acceptableStatuses */
+    private function webDavRequest(SftpBackupTarget $target, string $method, string $url, array $acceptableStatuses): void
+    {
+        $response = Http::withBasicAuth((string) $target->username, (string) $target->password)
+            ->timeout(30)
+            ->send($method, $url);
+
+        throw_unless(
+            in_array($response->status(), $acceptableStatuses, true),
+            new RuntimeException("WebDAV {$method} failed for {$url}: HTTP {$response->status()} " . $response->body()),
+        );
     }
 
     private function pushViaOAuth(SftpBackupTarget $target, string $tmpPath): void
@@ -177,41 +232,5 @@ class PushBackupToSftp implements ShouldQueue
         ]);
 
         return $tokens['access_token'];
-    }
-
-    private function buildFilesystem(SftpBackupTarget $target): Filesystem
-    {
-        return match ($target->protocol) {
-            'webdav' => $this->buildWebDavFilesystem($target),
-            default => $this->buildSftpFilesystem($target),
-        };
-    }
-
-    private function buildSftpFilesystem(SftpBackupTarget $target): Filesystem
-    {
-        $provider = new SftpConnectionProvider(
-            host: $target->host,
-            username: $target->username,
-            password: $target->auth_method === 'password' ? $target->password : null,
-            privateKey: $target->auth_method === 'private_key' ? $target->private_key : null,
-            passphrase: $target->passphrase ?: null,
-            port: $target->port,
-            timeout: 30,
-        );
-
-        return new Filesystem(new SftpAdapter($provider, $target->remote_path ?: '/'));
-    }
-
-    private function buildWebDavFilesystem(SftpBackupTarget $target): Filesystem
-    {
-        $client = new WebDAVClient([
-            'baseUri' => $target->base_url,
-            'userName' => $target->username,
-            'password' => $target->password,
-        ]);
-
-        // No prefix here on purpose -- remote_path is folded directly into the
-        // write path in pushViaFilesystem() instead. See the comment there.
-        return new Filesystem(new WebDAVAdapter($client, ''));
     }
 }
