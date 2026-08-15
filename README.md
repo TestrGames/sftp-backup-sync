@@ -11,18 +11,21 @@ server.
 
 ## How it works
 
-- Save / "Sync missing backups" / Connect / Disconnect are rendered via
-  `Filament\Schemas\Components\Actions::make([...])` placed directly in
-  the form's `schema()` array, not `Section::footerActions()` and not
-  page header actions (`getDefaultHeaderActions()`). Both of those
-  route through machinery that doesn't reliably render on
-  `ServerFormPage`-based pages on this panel version — footer actions
-  need the page's `mount()` to call header/footer-actions caching,
-  which `App\Filament\Server\Pages\ServerFormPage::mount()` doesn't do;
-  page header actions hit the same caching gap. `Actions::make()` is a
-  plain schema component with no dependency on that caching step — it
-  renders through the exact same code path as every other field on the
-  page, which is why it works.
+- Save / "Sync missing backups" / Connect / Disconnect are **plain HTML
+  buttons wired to `wire:click`** (`BackupSync::actionsBarHtml()`), not
+  a Filament `Action`. Three different first-party ways of rendering a
+  Filament Action on this page (`Section::footerActions()`, page header
+  actions, and the schema-level `Actions::make()` component) all failed
+  to render anything on this panel install — the common factor across
+  all three is that they render a `Filament\Actions\Action`, which
+  something about this install/version can't do on this page type, even
+  though every ordinary form field renders and reacts fine. Rather than
+  keep guessing at Filament/Pelican internals, this sidesteps the Action
+  system entirely and uses Livewire's own `wire:click` directly on raw
+  HTML — the same mechanism the live protocol-switching on this form
+  already proves works — at the cost of losing Filament's built-in
+  confirmation modals (replaced with a plain JS `confirm()`) and exact
+  button styling.
 - Panel doesn't create backups itself — Wings does, then reports back
   via a webhook that fires the Laravel event `App\Events\Server\BackupCompleted`.
   This plugin listens for that event (`src/Listeners/QueueSftpBackupForward.php`)

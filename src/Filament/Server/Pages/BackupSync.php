@@ -5,7 +5,6 @@ namespace Lisak\SftpBackupSync\Filament\Server\Pages;
 use App\Filament\Server\Pages\ServerFormPage;
 use App\Models\Backup;
 use BackedEnum;
-use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -13,11 +12,12 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
-use Filament\Schemas\Components\Actions;
 use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
+use Illuminate\Contracts\Support\Htmlable;
+use Illuminate\Support\Facades\Blade;
 use Lisak\SftpBackupSync\Jobs\PushBackupToSftp;
 use Lisak\SftpBackupSync\Models\BackupSyncLog;
 use Lisak\SftpBackupSync\Models\SftpBackupTarget;
@@ -156,20 +156,14 @@ class BackupSync extends ServerFormPage
                             ->default('/')
                             ->columnSpanFull(),
 
-                        // A plain schema component, not Section::footerActions() or a
-                        // page header action -- both of those go through Filament/Pelican
-                        // machinery that turned out to not reliably render on this page
-                        // type on this panel version. This renders through the exact same
-                        // path as the fields above it, which have never had a problem.
-                        Actions::make([
-                            $this->syncMissingAction(),
-                            $this->connectAction(),
-                            $this->disconnectAction(),
-                            Action::make('save')
-                                ->label('Save')
-                                ->action('saveTarget'),
-                        ])
-                            ->columnSpanFull(),
+                        // Deliberately NOT a Filament Action (footerActions / header
+                        // actions / schema Actions component all failed to render on
+                        // this panel install -- something about Action rendering
+                        // specifically is broken here, not where we place it). This is
+                        // a plain HTML button wired directly to Livewire's own
+                        // wire:click, the same mechanism the live protocol-switching
+                        // on this very form already proves works.
+                        $this->actionsBarHtml(),
                     ]),
             ]);
     }
@@ -227,86 +221,120 @@ class BackupSync extends ServerFormPage
             ->send();
     }
 
-    protected function syncMissingAction(): Action
+    public function syncMissingNow(): void
     {
-        return Action::make('sync_missing')
-            ->label('Sync missing backups now')
-            ->color('gray')
-            ->requiresConfirmation()
-            ->modalDescription('Queue every successful backup of this server that has not been synced yet.')
-            ->visible(fn () => (bool) optional($this->currentTarget())->enabled)
-            ->action(function () {
-                $server = $this->getRecord();
-                $target = $this->currentTarget();
+        abort_unless(user()?->can('backup_sync.update', $this->getRecord()), 403);
 
-                if (!$target || !$target->enabled) {
-                    return;
-                }
+        $server = $this->getRecord();
+        $target = $this->currentTarget();
 
-                $syncedBackupIds = BackupSyncLog::query()
-                    ->where('sftp_backup_target_id', $target->id)
-                    ->where('status', 'success')
-                    ->pluck('backup_id');
+        if (!$target || !$target->enabled) {
+            return;
+        }
 
-                $pending = Backup::query()
-                    ->where('server_id', $server->id)
-                    ->where('is_successful', true)
-                    ->whereNotIn('id', $syncedBackupIds)
-                    ->get();
+        $syncedBackupIds = BackupSyncLog::query()
+            ->where('sftp_backup_target_id', $target->id)
+            ->where('status', 'success')
+            ->pluck('backup_id');
 
-                foreach ($pending as $backup) {
-                    PushBackupToSftp::dispatch($backup);
-                }
+        $pending = Backup::query()
+            ->where('server_id', $server->id)
+            ->where('is_successful', true)
+            ->whereNotIn('id', $syncedBackupIds)
+            ->get();
 
-                Notification::make()
-                    ->title($pending->count() > 0
-                        ? "Queued {$pending->count()} backup(s) for sync."
-                        : 'Nothing to sync — everything is already up to date.')
-                    ->success()
-                    ->send();
-            });
+        foreach ($pending as $backup) {
+            PushBackupToSftp::dispatch($backup);
+        }
+
+        Notification::make()
+            ->title($pending->count() > 0
+                ? "Queued {$pending->count()} backup(s) for sync."
+                : 'Nothing to sync — everything is already up to date.')
+            ->success()
+            ->send();
     }
 
-    protected function connectAction(): Action
+    public function disconnectOAuth(): void
     {
-        return Action::make('connect_oauth')
-            ->label(fn () => 'Connect ' . $this->oauthProviderLabel($this->currentProtocol()))
-            ->color('gray')
-            ->visible(fn () => in_array($this->currentProtocol(), CloudOAuthProviderFactory::oauthProtocols(), true)
-                && !$this->currentTarget()?->oauth_access_token)
-            ->url(fn () => route('sftp-backup-sync.connect', [
-                'protocol' => $this->currentProtocol(),
-                'server' => $this->getRecord(),
-            ]))
-            ->openUrlInNewTab(false);
+        abort_unless(user()?->can('backup_sync.update', $this->getRecord()), 403);
+
+        $this->currentTarget()?->update([
+            'oauth_access_token' => null,
+            'oauth_refresh_token' => null,
+            'oauth_expires_at' => null,
+            'oauth_account_label' => null,
+        ]);
+
+        Notification::make()->title('Disconnected.')->success()->send();
     }
 
-    protected function disconnectAction(): Action
+    private function actionsBarHtml(): Htmlable
     {
-        return Action::make('disconnect_oauth')
-            ->label('Disconnect')
-            ->color('danger')
-            ->requiresConfirmation()
-            ->visible(fn () => in_array($this->currentProtocol(), CloudOAuthProviderFactory::oauthProtocols(), true)
-                && (bool) $this->currentTarget()?->oauth_access_token)
-            ->action(function () {
-                $this->currentTarget()?->update([
-                    'oauth_access_token' => null,
-                    'oauth_refresh_token' => null,
-                    'oauth_expires_at' => null,
-                    'oauth_account_label' => null,
-                ]);
+        $target = $this->currentTarget();
+        $protocol = $this->currentProtocol();
+        $isOAuthProtocol = in_array($protocol, CloudOAuthProviderFactory::oauthProtocols(), true);
 
-                Notification::make()->title('Disconnected.')->success()->send();
-            });
+        $showSync = (bool) $target?->enabled;
+        $showConnect = $isOAuthProtocol && !$target?->oauth_access_token;
+        $showDisconnect = $isOAuthProtocol && (bool) $target?->oauth_access_token;
+        $connectUrl = $isOAuthProtocol
+            ? route('sftp-backup-sync.connect', ['protocol' => $protocol, 'server' => $this->getRecord()])
+            : null;
+        $connectLabel = 'Connect ' . $this->oauthProviderLabel($protocol);
+
+        return Blade::render(<<<'HTML'
+        <div style="display:flex; flex-wrap:wrap; gap:.5rem; justify-content:flex-end; padding-block:.75rem;">
+            @if ($showSync)
+                <button
+                    type="button"
+                    wire:click="syncMissingNow"
+                    onclick="return confirm('Queue every successful backup that has not been synced yet?')"
+                    style="padding:.5rem 1rem; border-radius:.375rem; border:1px solid #52525b; background:transparent; color:inherit; cursor:pointer; font:inherit;"
+                >
+                    Sync missing backups now
+                </button>
+            @endif
+
+            @if ($showConnect)
+                <a
+                    href="{{ $connectUrl }}"
+                    style="padding:.5rem 1rem; border-radius:.375rem; border:1px solid #52525b; background:transparent; color:inherit; text-decoration:none; display:inline-block; font:inherit;"
+                >
+                    {{ $connectLabel }}
+                </a>
+            @endif
+
+            @if ($showDisconnect)
+                <button
+                    type="button"
+                    wire:click="disconnectOAuth"
+                    onclick="return confirm('Disconnect this account?')"
+                    style="padding:.5rem 1rem; border-radius:.375rem; border:1px solid #dc2626; background:transparent; color:#f87171; cursor:pointer; font:inherit;"
+                >
+                    Disconnect
+                </button>
+            @endif
+
+            <button
+                type="button"
+                wire:click="saveTarget"
+                style="padding:.5rem 1rem; border-radius:.375rem; border:none; background:#2563eb; color:#fff; cursor:pointer; font:inherit;"
+            >
+                Save
+            </button>
+        </div>
+        HTML, [
+            'showSync' => $showSync,
+            'showConnect' => $showConnect,
+            'showDisconnect' => $showDisconnect,
+            'connectUrl' => $connectUrl,
+            'connectLabel' => $connectLabel,
+        ]);
     }
 
     private function currentProtocol(): ?string
     {
-        // Deliberately not `Get $get` injection here -- that's confirmed reliable
-        // inside *field* closures (visible()/required() on the schema itself), but
-        // support for it in Action closures is less certain, so this reads the
-        // live value directly instead. $this->form is always available.
         return $this->form->getRawState()['protocol'] ?? null;
     }
 
