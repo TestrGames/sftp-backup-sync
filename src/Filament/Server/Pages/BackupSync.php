@@ -11,6 +11,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Section;
@@ -20,6 +21,7 @@ use Filament\Support\Enums\Alignment;
 use Lisak\SftpBackupSync\Jobs\PushBackupToSftp;
 use Lisak\SftpBackupSync\Models\BackupSyncLog;
 use Lisak\SftpBackupSync\Models\SftpBackupTarget;
+use Lisak\SftpBackupSync\Support\OAuth\CloudOAuthProviderFactory;
 
 class BackupSync extends ServerFormPage
 {
@@ -39,15 +41,30 @@ class BackupSync extends ServerFormPage
         abort_unless(user()?->can('backup_sync.update', $this->getRecord()), 403);
     }
 
+    public function mount(): void
+    {
+        parent::mount();
+
+        if ($message = session('sftp-backup-sync-success')) {
+            Notification::make()->title($message)->success()->send();
+        }
+
+        if ($message = session('sftp-backup-sync-error')) {
+            Notification::make()->title($message)->danger()->send();
+        }
+    }
+
     public function form(Schema $schema): Schema
     {
         return parent::form($schema)
             ->components([
                 Section::make('Backup Sync')
-                    ->description('Automatically copy every completed backup of this server to your own SFTP or WebDAV destination — nobody else on this panel can see or use this configuration.')
+                    ->description('Automatically copy every completed backup of this server to your own destination — nobody else on this panel can see or use this configuration.')
                     ->columnSpanFull()
                     ->footerActions([
                         $this->syncMissingAction(),
+                        $this->connectAction(),
+                        $this->disconnectAction(),
                         Action::make('save')
                             ->label('Save')
                             ->action('saveTarget'),
@@ -63,6 +80,8 @@ class BackupSync extends ServerFormPage
                             ->options([
                                 'sftp' => 'SFTP',
                                 'webdav' => 'WebDAV (e.g. Nextcloud)',
+                                'onedrive' => 'OneDrive',
+                                'google_drive' => 'Google Drive',
                             ])
                             ->default('sftp')
                             ->required()
@@ -117,7 +136,18 @@ class BackupSync extends ServerFormPage
                                     ->columnSpanFull(),
                             ]),
 
+                        Fieldset::make('Cloud account')
+                            ->visible(fn (Get $get) => in_array($get('protocol'), CloudOAuthProviderFactory::oauthProtocols(), true))
+                            ->columnSpanFull()
+                            ->schema([
+                                TextEntry::make('oauth_status')
+                                    ->hiddenLabel()
+                                    ->state(fn () => $this->oauthStatusText())
+                                    ->columnSpanFull(),
+                            ]),
+
                         TextInput::make('username')
+                            ->visible(fn (Get $get) => in_array($get('protocol'), ['sftp', 'webdav'], true))
                             ->columnSpan(1),
 
                         TextInput::make('password')
@@ -125,11 +155,13 @@ class BackupSync extends ServerFormPage
                             ->revealable()
                             ->dehydrated(fn (?string $state) => filled($state))
                             ->helperText('Leave blank to keep the currently stored password.')
-                            ->visible(fn (Get $get) => $get('protocol') === 'webdav' || $get('auth_method') === 'password')
+                            ->visible(fn (Get $get) => $get('protocol') === 'webdav'
+                                || ($get('protocol') === 'sftp' && $get('auth_method') === 'password'))
                             ->columnSpan(1),
 
                         TextInput::make('remote_path')
                             ->label('Remote directory')
+                            ->helperText('For OneDrive/Google Drive this is a folder name (created automatically if missing).')
                             ->default('/')
                             ->columnSpanFull(),
                     ]),
@@ -227,6 +259,60 @@ class BackupSync extends ServerFormPage
                     ->success()
                     ->send();
             });
+    }
+
+    protected function connectAction(): Action
+    {
+        return Action::make('connect_oauth')
+            ->label(fn (Get $get) => 'Connect ' . $this->oauthProviderLabel($get('protocol')))
+            ->color('gray')
+            ->visible(fn (Get $get) => in_array($get('protocol'), CloudOAuthProviderFactory::oauthProtocols(), true)
+                && !$this->currentTarget()?->oauth_access_token)
+            ->url(fn (Get $get) => route('sftp-backup-sync.connect', [
+                'protocol' => $get('protocol'),
+                'server' => $this->getRecord(),
+            ]))
+            ->openUrlInNewTab(false);
+    }
+
+    protected function disconnectAction(): Action
+    {
+        return Action::make('disconnect_oauth')
+            ->label('Disconnect')
+            ->color('danger')
+            ->requiresConfirmation()
+            ->visible(fn (Get $get) => in_array($get('protocol'), CloudOAuthProviderFactory::oauthProtocols(), true)
+                && (bool) $this->currentTarget()?->oauth_access_token)
+            ->action(function () {
+                $this->currentTarget()?->update([
+                    'oauth_access_token' => null,
+                    'oauth_refresh_token' => null,
+                    'oauth_expires_at' => null,
+                    'oauth_account_label' => null,
+                ]);
+
+                Notification::make()->title('Disconnected.')->success()->send();
+            });
+    }
+
+    private function oauthStatusText(): string
+    {
+        $target = $this->currentTarget();
+
+        if ($target?->oauth_access_token) {
+            return 'Connected' . ($target->oauth_account_label ? " as {$target->oauth_account_label}." : '.');
+        }
+
+        return 'Not connected yet — click "Connect" below, then Save once you\'re back here.';
+    }
+
+    private function oauthProviderLabel(?string $protocol): string
+    {
+        return match ($protocol) {
+            'onedrive' => 'OneDrive',
+            'google_drive' => 'Google Drive',
+            default => 'account',
+        };
     }
 
     private function currentTarget(): ?SftpBackupTarget

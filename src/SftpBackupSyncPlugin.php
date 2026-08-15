@@ -44,7 +44,7 @@ class SftpBackupSyncPlugin implements HasPluginSettings, Plugin
             Section::make('OneDrive')
                 ->description(
                     'Create an app registration at portal.azure.com -> App registrations, add a "Web" '
-                    . 'redirect URI of ' . url('/plugin/sftp-backup-sync/onedrive/callback')
+                    . 'redirect URI of ' . route('sftp-backup-sync.callback', ['protocol' => 'onedrive'])
                     . ', grant the delegated Microsoft Graph permissions "Files.ReadWrite" and '
                     . '"offline_access", then paste the Application (client) ID and a client secret below.',
                 )
@@ -64,7 +64,7 @@ class SftpBackupSyncPlugin implements HasPluginSettings, Plugin
                 ->description(
                     'Create an OAuth client at console.cloud.google.com -> APIs & Services -> Credentials '
                     . '(type "Web application"), add an authorized redirect URI of '
-                    . url('/plugin/sftp-backup-sync/google/callback')
+                    . route('sftp-backup-sync.callback', ['protocol' => 'google_drive'])
                     . ', enable the Google Drive API for the project, then paste the client ID and secret below.',
                 )
                 ->columns(2)

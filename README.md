@@ -41,16 +41,69 @@ server.
   passes this check (owners bypass permission checks in
   `ServerPolicy::before()`), a subuser needs it explicitly granted.
 
-## Why no OneDrive / Google Drive
+## OneDrive / Google Drive setup (one-time, admin only)
 
-Both require an OAuth2 login flow (no username+password / app-password
-option), which is a materially bigger feature — a registered OAuth app
-per provider, a connect/callback route, and refresh-token storage and
-rotation per user. Not implemented here. If you want either without
-writing that flow: run `rclone serve sftp` in front of an `rclone`
-remote configured for OneDrive/Google Drive/anything else `rclone`
-supports, and point this plugin's SFTP fields at that bridge — it works
-unmodified since the plugin just speaks generic SFTP.
+Both use OAuth2, so unlike SFTP/WebDAV there's a one-time setup step
+before any server owner can connect their account: you register an
+OAuth app with Microsoft/Google, and paste its client ID/secret into
+the plugin's own settings page (Admin → Plugins → SFTP Backup Sync →
+Settings). This is a *global* one-time step, not per server or per
+user — once it's done, every server owner just clicks "Connect" and
+logs into their own account.
+
+**OneDrive:**
+1. [portal.azure.com](https://portal.azure.com) → *App registrations* → *New registration*.
+2. Add a **Web** platform redirect URI. The plugin's settings page shows
+   you the exact URL to use (it's derived from your panel's own
+   `APP_URL`, something like `https://your-panel/plugin/sftp-backup-sync/onedrive/callback`).
+3. Under *API permissions*, add the delegated Microsoft Graph
+   permissions `Files.ReadWrite` and `offline_access` (the latter is
+   required — without it Microsoft never issues a refresh token, and
+   the connection dies after ~1 hour).
+4. Under *Certificates & secrets*, create a new client secret.
+5. Paste the *Application (client) ID* and the secret's *value* (not its
+   ID) into the plugin settings page.
+
+**Google Drive:**
+1. [console.cloud.google.com](https://console.cloud.google.com) → *APIs
+   & Services* → *Credentials* → *Create credentials* → *OAuth client
+   ID* → type **Web application**.
+2. Add the authorized redirect URI shown on the plugin's settings page
+   (`https://your-panel/plugin/sftp-backup-sync/google_drive/callback`).
+3. Under *APIs & Services* → *Library*, enable the **Google Drive API**
+   for the project.
+4. If the OAuth consent screen is in "Testing" mode, every user who
+   wants to connect their Drive has to be added as a test user first (or
+   publish the app / verify it for unlimited users).
+5. Paste the client ID and secret into the plugin settings page.
+
+The plugin only ever requests the narrow `drive.file` scope for Google
+(it can only see files it created itself, not your whole Drive) and
+`Files.ReadWrite` for OneDrive.
+
+## How the OAuth connect flow works
+
+- Routes are registered via a `RouteServiceProvider`
+  (`src/Providers/SftpBackupSyncRoutesProvider.php`) under `web` + `auth`
+  middleware — the plugin auto-discovery mechanism only auto-wires
+  `src/Providers/*` as generic service providers, so route registration
+  has to happen explicitly, and needs those two middleware groups
+  itself (bare plugin routes get none by default) for `$request->user()`
+  to resolve to the logged-in panel user at all.
+- Clicking "Connect" (`src/Http/Controllers/OAuthConnectController.php::connect()`)
+  checks you can manage that server, stashes `server_id`/`user_id` and a
+  random `state` value in the **session**, then redirects to
+  Microsoft/Google's real login screen.
+- The provider redirects back to a callback route; the handler checks
+  the returned `state` against the one stored in session (CSRF
+  protection — nothing about which server this is for ever round-trips
+  through the browser or the OAuth `state` param itself, it only ever
+  comes from the server-side session), exchanges the `code` for tokens,
+  and stores them encrypted on the server's `sftp_backup_targets` row.
+- The sync job refreshes the access token automatically when it's
+  within a minute of expiring, using the stored refresh token — you
+  never have to reconnect unless you explicitly disconnect, or the
+  provider revokes the grant.
 
 ## Requirements
 
@@ -114,12 +167,18 @@ admin-side tab and header action are gone; use the client panel instead.
 
 ## Notes / caveats
 
-- One destination per server (not multiple), and it's SFTP *or* WebDAV,
-  not both at once.
-- The remote layout is `<remote_path>/<server-uuid>/<backup-uuid>.tar.gz`.
+- One destination per server (not multiple), and it's one protocol at a
+  time — SFTP, WebDAV, OneDrive, or Google Drive.
+- For SFTP/WebDAV the remote layout is
+  `<remote_path>/<server-uuid>/<backup-uuid>.tar.gz`. OneDrive uses the
+  same nested path (Graph API auto-creates missing folders). Google
+  Drive has no real path concept, so `remote_path` there is treated as
+  a single folder name, resolved or created once per upload — nested
+  `a/b/c` style paths also work, just a bit more API round-trips.
 - If a sync fails, the error is stored on both the log row and the
   target's `last_error` column; check `storage/logs/laravel.log` for the
   full exception, or query `backup_sftp_sync_logs`.
 - Failed jobs retry up to 3 times (`PushBackupToSftp::$tries`), then stay
   failed — rerun via the "Sync missing backups now" action once the
-  underlying issue (credentials, disk space, network) is fixed.
+  underlying issue (credentials, disk space, network, or a revoked
+  OAuth grant) is fixed.
