@@ -13,6 +13,7 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Notifications\Notification;
+use Filament\Schemas\Components\Actions;
 use Filament\Schemas\Components\Fieldset;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
@@ -51,25 +52,6 @@ class BackupSync extends ServerFormPage
         if ($message = session('sftp-backup-sync-error')) {
             Notification::make()->title($message)->danger()->send();
         }
-    }
-
-    /**
-     * @return array<Action>
-     */
-    protected function getDefaultHeaderActions(): array
-    {
-        // Deliberately header actions, not Section::footerActions() -- the bottom
-        // action bar has a known CSS positioning bug on this panel version (see
-        // pelican-dev/panel#2501, "Fix invisible save button on CreateBackupHost
-        // page": same symptom, same fix -- move the actions to the header).
-        return [
-            $this->syncMissingAction(),
-            $this->connectAction(),
-            $this->disconnectAction(),
-            Action::make('save')
-                ->label('Save')
-                ->action('saveTarget'),
-        ];
     }
 
     public function form(Schema $schema): Schema
@@ -172,6 +154,21 @@ class BackupSync extends ServerFormPage
                             ->label('Remote directory')
                             ->helperText('For OneDrive/Google Drive this is a folder name (created automatically if missing).')
                             ->default('/')
+                            ->columnSpanFull(),
+
+                        // A plain schema component, not Section::footerActions() or a
+                        // page header action -- both of those go through Filament/Pelican
+                        // machinery that turned out to not reliably render on this page
+                        // type on this panel version. This renders through the exact same
+                        // path as the fields above it, which have never had a problem.
+                        Actions::make([
+                            $this->syncMissingAction(),
+                            $this->connectAction(),
+                            $this->disconnectAction(),
+                            Action::make('save')
+                                ->label('Save')
+                                ->action('saveTarget'),
+                        ])
                             ->columnSpanFull(),
                     ]),
             ]);
@@ -321,7 +318,7 @@ class BackupSync extends ServerFormPage
             return 'Connected' . ($target->oauth_account_label ? " as {$target->oauth_account_label}." : '.');
         }
 
-        return 'Not connected yet — click "Connect" above, then Save once you\'re back here.';
+        return 'Not connected yet — click "Connect", then Save once you\'re back here.';
     }
 
     private function oauthProviderLabel(?string $protocol): string
