@@ -77,10 +77,12 @@ class PushBackupToSftp implements ShouldQueue
             $log->update(['status' => 'success', 'error' => null, 'synced_at' => now()]);
             $target->update(['last_synced_at' => now(), 'last_error' => null]);
         } catch (Throwable $exception) {
-            Log::warning("sftp-backup-sync: failed to sync backup {$this->backup->uuid}: {$exception->getMessage()}");
+            $fullMessage = $this->describeException($exception);
 
-            $log->update(['status' => 'failed', 'error' => $exception->getMessage()]);
-            $target->update(['last_error' => $exception->getMessage()]);
+            Log::warning("sftp-backup-sync: failed to sync backup {$this->backup->uuid}: {$fullMessage}");
+
+            $log->update(['status' => 'failed', 'error' => $fullMessage]);
+            $target->update(['last_error' => $fullMessage]);
 
             throw $exception;
         } finally {
@@ -88,6 +90,27 @@ class PushBackupToSftp implements ShouldQueue
                 unlink($tmpPath);
             }
         }
+    }
+
+    /**
+     * Flysystem adapters (WebDAV in particular) tend to throw a generic
+     * wrapper ("Unable to check existence for: ...") whose own message
+     * says nothing useful -- the actual cause (auth failure, timeout,
+     * TLS error, wrong path) lives one or more levels down in
+     * getPrevious(). Walk the whole chain so the stored error is
+     * actually actionable.
+     */
+    private function describeException(Throwable $exception): string
+    {
+        $parts = [$exception->getMessage() ?: get_class($exception)];
+
+        $cause = $exception->getPrevious();
+        while ($cause) {
+            $parts[] = $cause->getMessage() ?: get_class($cause);
+            $cause = $cause->getPrevious();
+        }
+
+        return implode(' | caused by: ', $parts);
     }
 
     private function pushViaFilesystem(SftpBackupTarget $target, string $tmpPath): void
