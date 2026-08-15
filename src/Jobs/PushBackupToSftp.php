@@ -122,6 +122,18 @@ class PushBackupToSftp implements ShouldQueue
 
         try {
             $remotePath = trim($this->backup->server->uuid, '/') . '/' . $this->backup->uuid . '.tar.gz';
+
+            if ($target->protocol === 'webdav') {
+                // WebDAVAdapter's own createDirectory() mis-handles the case where a
+                // path segment being auto-created is exactly equal to the adapter's
+                // configured prefix -- stripDirectoryPrefix() reduces it to an empty
+                // string, and the existence check against that empty path doesn't
+                // reliably detect an already-existing directory. Side-step it by not
+                // giving the adapter a prefix at all; fold remote_path into the write
+                // path instead, same as the OneDrive/Google Drive providers already do.
+                $remotePath = ltrim(trim($target->remote_path ?: '', '/') . '/' . $remotePath, '/');
+            }
+
             $filesystem->writeStream($remotePath, $stream);
         } finally {
             if (is_resource($stream)) {
@@ -198,9 +210,8 @@ class PushBackupToSftp implements ShouldQueue
             'password' => $target->password,
         ]);
 
-        // Flysystem prefixes are relative to baseUri; a leading slash here can
-        // produce a doubled slash when joined ("/testrr" + "/test" = "...testrr//test"),
-        // which some WebDAV servers/proxies route unpredictably instead of a clean 404.
-        return new Filesystem(new WebDAVAdapter($client, trim($target->remote_path ?: '', '/')));
+        // No prefix here on purpose -- remote_path is folded directly into the
+        // write path in pushViaFilesystem() instead. See the comment there.
+        return new Filesystem(new WebDAVAdapter($client, ''));
     }
 }
