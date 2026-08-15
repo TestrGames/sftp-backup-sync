@@ -1,205 +1,204 @@
 # SFTP Backup Sync
 
-Pelican Panel plugin that copies every completed server backup to a
-destination the **server owner configures themselves** — SFTP or
-WebDAV (e.g. Nextcloud) — in addition to wherever Pelican already
-stores it (Wings local disk or S3). Fully self-service: each server
-owner (or a subuser explicitly granted the `backup_sync.update`
-permission) manages their own destination from the client area —
-Server → **Backup Sync** in the sidebar — with no admin involvement per
-server.
+A [Pelican Panel](https://pelican.dev) plugin that automatically copies every
+completed server backup to a destination **each server owner picks and
+configures themselves** — no admin setup required per server.
 
-## How it works
+[![Latest release](https://img.shields.io/github/v/release/TestrGames/sftp-backup-sync?label=release)](https://github.com/TestrGames/sftp-backup-sync/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-- Save / "Sync missing backups" / Connect / Disconnect are **plain HTML
-  buttons wired to `wire:click`** (`BackupSync::actionsBarHtml()`), not
-  a Filament `Action`. Three different first-party ways of rendering a
-  Filament Action on this page (`Section::footerActions()`, page header
-  actions, and the schema-level `Actions::make()` component) all failed
-  to render anything on this panel install — the common factor across
-  all three is that they render a `Filament\Actions\Action`, which
-  something about this install/version can't do on this page type, even
-  though every ordinary form field renders and reacts fine. Rather than
-  keep guessing at Filament/Pelican internals, this sidesteps the Action
-  system entirely and uses Livewire's own `wire:click` directly on raw
-  HTML — the same mechanism the live protocol-switching on this form
-  already proves works — at the cost of losing Filament's built-in
-  confirmation modals (replaced with a plain JS `confirm()`) and exact
-  button styling.
-- Panel doesn't create backups itself — Wings does, then reports back
-  via a webhook that fires the Laravel event `App\Events\Server\BackupCompleted`.
-  This plugin listens for that event (`src/Listeners/QueueSftpBackupForward.php`)
-  and, if the server has sync enabled, queues a job.
-- The job (`src/Jobs/PushBackupToSftp.php`) resolves a temporary download
-  link the same way Pelican's own restore/download flow does
-  (`BackupAdapterService::get($backup->backupHost->schema)->getDownloadLink()`),
-  streams the backup to a temp file, then streams it up to the
-  configured destination. SFTP uses `league/flysystem-sftp-v3`. WebDAV
-  is plain HTTP (`MKCOL` per path segment, then `PUT`) via Laravel's
-  `Http` client, not a library — `league/flysystem-webdav`
-  (`Sabre\DAV\Client` underneath) reliably mis-handled directory
-  creation against a real Nextcloud instance in testing (misreporting
-  "already exists" as a hard failure, or vice versa, with no useful
-  underlying cause exposed), while plain `curl` against the exact same
-  URLs always worked — so that's exactly what this does instead. Nothing
-  is ever fully buffered in memory for either protocol.
-- Per-server config lives in its own table (`sftp_backup_targets`), one
-  row per server, with `password` / `private_key` / `passphrase` stored
-  using Laravel's `encrypted` Eloquent cast (AES via `APP_KEY` — same
-  mechanism the `generic-oidc-providers` plugin uses for OAuth client
-  secrets).
-- Every sync attempt (auto or manual) is logged to `backup_sftp_sync_logs`
-  (`backup_id`, `target_id`, `status`, `error`, `synced_at`), which is
-  also how the manual "sync missing backups" action knows which backups
-  are already synced vs. still pending.
-- The settings page (`src/Filament/Server/Pages/BackupSync.php`) is
-  registered directly into the client "server" Filament panel via
-  `SftpBackupSyncPlugin::register(Panel $panel)` →
-  `$panel->discoverPages(...)`, the same mechanism the official
-  `player-counter` plugin uses to add a page to that panel. Access is
-  gated by a custom subuser permission (`backup_sync.update`, registered
-  via `Subuser::registerCustomPermissions()`); the server owner always
-  passes this check (owners bypass permission checks in
-  `ServerPolicy::before()`), a subuser needs it explicitly granted.
+## What it does
 
-## OneDrive / Google Drive setup (one-time, admin only)
+Backups already land wherever Pelican stores them (Wings local disk or S3).
+This plugin sends an automatic *second copy* somewhere the server owner
+controls — their own SFTP server, their own Nextcloud, their own OneDrive or
+Google Drive. Nobody else on the panel can see or touch that configuration.
 
-Both use OAuth2, so unlike SFTP/WebDAV there's a one-time setup step
-before any server owner can connect their account: you register an
-OAuth app with Microsoft/Google, and paste its client ID/secret into
-the plugin's own settings page (Admin → Plugins → SFTP Backup Sync →
-Settings). This is a *global* one-time step, not per server or per
-user — once it's done, every server owner just clicks "Connect" and
-logs into their own account.
-
-**OneDrive:**
-1. [portal.azure.com](https://portal.azure.com) → *App registrations* → *New registration*.
-2. Add a **Web** platform redirect URI. The plugin's settings page shows
-   you the exact URL to use (it's derived from your panel's own
-   `APP_URL`, something like `https://your-panel/plugin/sftp-backup-sync/onedrive/callback`).
-3. Under *API permissions*, add the delegated Microsoft Graph
-   permissions `Files.ReadWrite` and `offline_access` (the latter is
-   required — without it Microsoft never issues a refresh token, and
-   the connection dies after ~1 hour).
-4. Under *Certificates & secrets*, create a new client secret.
-5. Paste the *Application (client) ID* and the secret's *value* (not its
-   ID) into the plugin settings page.
-
-**Google Drive:**
-1. [console.cloud.google.com](https://console.cloud.google.com) → *APIs
-   & Services* → *Credentials* → *Create credentials* → *OAuth client
-   ID* → type **Web application**.
-2. Add the authorized redirect URI shown on the plugin's settings page
-   (`https://your-panel/plugin/sftp-backup-sync/google_drive/callback`).
-3. Under *APIs & Services* → *Library*, enable the **Google Drive API**
-   for the project.
-4. If the OAuth consent screen is in "Testing" mode, every user who
-   wants to connect their Drive has to be added as a test user first (or
-   publish the app / verify it for unlimited users).
-5. Paste the client ID and secret into the plugin settings page.
-
-The plugin only ever requests the narrow `drive.file` scope for Google
-(it can only see files it created itself, not your whole Drive) and
-`Files.ReadWrite` for OneDrive.
-
-## How the OAuth connect flow works
-
-- Routes are registered via a `RouteServiceProvider`
-  (`src/Providers/SftpBackupSyncRoutesProvider.php`) under `web` + `auth`
-  middleware — the plugin auto-discovery mechanism only auto-wires
-  `src/Providers/*` as generic service providers, so route registration
-  has to happen explicitly, and needs those two middleware groups
-  itself (bare plugin routes get none by default) for `$request->user()`
-  to resolve to the logged-in panel user at all.
-- Clicking "Connect" (`src/Http/Controllers/OAuthConnectController.php::connect()`)
-  checks you can manage that server, stashes `server_id`/`user_id` and a
-  random `state` value in the **session**, then redirects to
-  Microsoft/Google's real login screen.
-- The provider redirects back to a callback route; the handler checks
-  the returned `state` against the one stored in session (CSRF
-  protection — nothing about which server this is for ever round-trips
-  through the browser or the OAuth `state` param itself, it only ever
-  comes from the server-side session), exchanges the `code` for tokens,
-  and stores them encrypted on the server's `sftp_backup_targets` row.
-- The sync job refreshes the access token automatically when it's
-  within a minute of expiring, using the stored refresh token — you
-  never have to reconnect unless you explicitly disconnect, or the
-  provider revokes the grant.
-
-## Requirements
-
-- **A running queue worker.** The upload happens in a queued job, not
-  inline — if you don't already have `php artisan queue:work` (or
-  Horizon, or a systemd/supervisor unit) running for the panel, backups
-  will never actually get pushed; they'll just sit queued. Most
-  production Pelican installs already run a queue worker for mail/other
-  core features, but double-check.
+- **Self-service** — configured entirely from the client area
+  (Server → **Backup Sync**), not the admin panel
+- **Four destinations** — SFTP, WebDAV (Nextcloud etc.), OneDrive, Google Drive
+- **Automatic** — every completed backup is queued for sync the moment it finishes
+- **Catches up on old backups** — "Sync missing backups now" handles anything
+  made before the destination was configured
+- **Visible status** — a panel on the page shows the last successful sync, the
+  last error (the real cause, not a generic wrapper message), and recent
+  attempt history
+- **Delegatable** — grant a subuser the "Backup Sync" permission if the owner
+  wants to share the responsibility
 
 ## Install
 
-1. Download the latest `sftp-backup-sync.zip` from
+1. Grab the latest `sftp-backup-sync.zip` from
    [Releases](https://github.com/TestrGames/sftp-backup-sync/releases)
-   and upload it via the panel's plugin import screen (Admin → Plugins
-   → Import). Or `wget`/`curl` it directly into
-   `/var/www/pelican/plugins/sftp-backup-sync` on the panel server and
-   unzip.
-2. `php artisan p:plugin:install` and pick `sftp-backup-sync` (skip if
-   installed via the UI — the panel runs `composer require` for both
-   Flysystem adapters and the plugin's migrations for you as part of
-   that step).
+2. Admin → Plugins → **Import** → upload the zip
 3. `php artisan optimize:clear`
-4. As a server owner: open a server → **Backup Sync** in the sidebar →
-   pick SFTP or WebDAV, fill in the connection details, toggle "Forward
-   backups", Save.
-5. To let a subuser manage this themselves, grant them the "Backup
-   Sync" permission group when editing their subuser access (Server →
-   Users → *subuser* → permissions list — it shows up automatically
-   once the plugin is installed).
+4. As a server owner: open a server → **Backup Sync** in the sidebar → pick a
+   protocol, fill in the details, toggle **Forward backups**, Save
+
+That covers SFTP and WebDAV. OneDrive and Google Drive need one extra
+admin-only setup step first — see below.
+
+<details>
+<summary><strong>Setting up OneDrive / Google Drive (one-time, admin only)</strong></summary>
+
+<br>
+
+Both use OAuth2, so before any server owner can connect their account, an
+admin registers an app with Microsoft/Google **once** and pastes its client
+ID/secret into the plugin's own settings page
+(Admin → Plugins → SFTP Backup Sync → Settings). This is global, not
+per-server — after this one-time step, every server owner just clicks
+"Connect" and logs into their own account.
+
+**OneDrive**
+
+1. [portal.azure.com](https://portal.azure.com) → *App registrations* → *New registration*
+2. Add a **Web** redirect URI — the plugin's settings page shows the exact
+   URL to use (based on your panel's `APP_URL`, something like
+   `https://your-panel/plugin/sftp-backup-sync/onedrive/callback`)
+3. Under *API permissions*, add delegated Microsoft Graph permissions
+   `Files.ReadWrite` and `offline_access` (the second one is required —
+   without it, Microsoft never issues a refresh token and the connection
+   dies after ~1 hour)
+4. Under *Certificates & secrets*, create a client secret
+5. Paste the *Application (client) ID* and the secret's *value* into the
+   plugin settings page
+
+**Google Drive**
+
+1. [console.cloud.google.com](https://console.cloud.google.com) →
+   *APIs & Services* → *Credentials* → *Create credentials* →
+   *OAuth client ID* → type **Web application**
+2. Add the redirect URI shown on the plugin's settings page
+   (`https://your-panel/plugin/sftp-backup-sync/google_drive/callback`)
+3. Under *APIs & Services* → *Library*, enable the **Google Drive API**
+4. If the OAuth consent screen is in "Testing" mode, add each user who wants
+   to connect as a test user (or publish/verify the app for everyone)
+5. Paste the client ID and secret into the plugin settings page
+
+The plugin only ever requests the narrow `drive.file` scope for Google (it
+can only see files it created itself, not your whole Drive) and
+`Files.ReadWrite` for OneDrive.
+
+</details>
+
+## Requirements
+
+A running queue worker. The upload happens in a background job — if
+`php artisan queue:work` (or Horizon, or a systemd/supervisor unit) isn't
+running for the panel, backups will sit queued and never actually get
+pushed. Most production Pelican installs already run one for mail and other
+core features.
 
 ## Updating
 
-Once installed from a release that has `update_url` set in `plugin.json`
-(everything from v1.1.0 onward), the panel checks
-[`update.json`](update.json) for a newer version and shows an **Update**
-button in Admin → Plugins when one exists — no manual re-upload needed.
+The panel checks [`update.json`](update.json) for a newer version and shows
+an **Update** button in Admin → Plugins when one exists. Two caching layers
+can delay that showing up:
 
-To publish a new version:
+| Layer | Delay | Force it |
+|---|---|---|
+| Panel's own update check | 10 minutes | `php artisan tinker --execute="cache()->forget('plugins.sftp-backup-sync.update');"` |
+| GitHub's CDN serving `update.json` | a few minutes | just wait, nothing to force |
 
-1. Bump `"version"` in `plugin.json`.
-2. Commit, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`
-   (the tag must match `plugin.json`'s version exactly, e.g. `1.2.0` →
-   `v1.2.0` — the release workflow checks this and fails otherwise).
-3. [`.github/workflows/release.yml`](.github/workflows/release.yml) takes
-   it from there: builds the zip, creates the GitHub Release with it
-   attached, and rewrites `update.json` to point at it — all pushed back
-   to `main` automatically.
+After updating, **restart the queue worker** —
+`php artisan queue:restart` (or restart the container). It's a long-running
+process that keeps old job code loaded in memory until restarted,
+separately from anything `optimize:clear` touches.
 
-`raw.githubusercontent.com` caches for a few minutes, so the panel might
-not see a brand-new release immediately.
+<details>
+<summary>Publishing a new version (maintainers)</summary>
 
-## Upgrading from 1.0.0 (admin-only SFTP tab)
+<br>
 
-1.1.0 moves configuration out of Admin → Servers → *server* entirely
-and into the client panel, and adds WebDAV as a second protocol. Any
-targets configured under 1.0.0 keep working unchanged (same table, new
-`protocol`/`base_url` columns default to the old SFTP-only behavior) —
-just re-upload the plugin and re-run install; no data is lost. The
-admin-side tab and header action are gone; use the client panel instead.
+1. Bump `"version"` in `plugin.json`
+2. Commit, then `git tag vX.Y.Z && git push origin vX.Y.Z` (must match
+   `plugin.json`'s version exactly)
+3. [`.github/workflows/release.yml`](.github/workflows/release.yml) takes it
+   from there — builds the zip, creates the GitHub Release, and rewrites
+   `update.json`, all pushed back to `main` automatically
 
-## Notes / caveats
+</details>
 
-- One destination per server (not multiple), and it's one protocol at a
-  time — SFTP, WebDAV, OneDrive, or Google Drive.
-- For SFTP/WebDAV the remote layout is
-  `<remote_path>/<server-uuid>/<backup-uuid>.tar.gz`. OneDrive uses the
-  same nested path (Graph API auto-creates missing folders). Google
-  Drive has no real path concept, so `remote_path` there is treated as
-  a single folder name, resolved or created once per upload — nested
-  `a/b/c` style paths also work, just a bit more API round-trips.
-- If a sync fails, the error is stored on both the log row and the
-  target's `last_error` column; check `storage/logs/laravel.log` for the
-  full exception, or query `backup_sftp_sync_logs`.
-- Failed jobs retry up to 3 times (`PushBackupToSftp::$tries`), then stay
-  failed — rerun via the "Sync missing backups now" action once the
-  underlying issue (credentials, disk space, network, or a revoked
-  OAuth grant) is fixed.
+<details>
+<summary><strong>How it works, technically</strong></summary>
+
+<br>
+
+- **Trigger** — Panel doesn't create backups itself, Wings does, then
+  reports back via a webhook that fires the Laravel event
+  `App\Events\Server\BackupCompleted`. A listener
+  (`src/Listeners/QueueSftpBackupForward.php`) queues a job if the server
+  has sync enabled.
+- **Transfer** — the job (`src/Jobs/PushBackupToSftp.php`) resolves a
+  temporary download link the same way Pelican's own restore/download flow
+  does, streams the backup to a temp file, then streams it to the
+  destination. Nothing is ever fully buffered in memory.
+  - SFTP uses `league/flysystem-sftp-v3`.
+  - WebDAV is plain HTTP (`MKCOL` per path segment, then `PUT`) via
+    Laravel's `Http` client — deliberately not a library.
+    `league/flysystem-webdav` (`Sabre\DAV\Client` underneath) unreliably
+    handled directory creation against a real Nextcloud instance during
+    testing; plain `curl` against the exact same URLs always worked, so
+    that's what this does instead.
+  - OneDrive/Google Drive use the Microsoft Graph / Drive REST APIs
+    directly, via resumable, chunked upload sessions.
+- **Storage** — per-server config lives in `sftp_backup_targets`, one row
+  per server. `password`/`private_key`/`passphrase`/OAuth tokens are stored
+  using Laravel's `encrypted` Eloquent cast (AES via `APP_KEY`).
+- **History** — every sync attempt is logged to `backup_sftp_sync_logs`,
+  which drives both the status panel and "Sync missing backups now"
+  (it needs to know what's already synced).
+- **Page registration** — the settings page is registered into the client
+  "server" Filament panel via `SftpBackupSyncPlugin::register(Panel $panel)`
+  → `$panel->discoverPages(...)`. Access is gated by a custom subuser
+  permission (`backup_sync.update`); the server owner always passes it
+  (owners bypass permission checks), a subuser needs it explicitly granted.
+- **UI buttons** — Save / "Sync missing backups" / Connect / Disconnect are
+  plain HTML wired to Livewire's `wire:click`, not a Filament `Action`.
+  Three different first-party ways of rendering a Filament Action on this
+  page — footer actions, header actions, and the schema-level
+  `Actions::make()` component — all failed to render anything on the panel
+  install this was built against. Rather than keep fighting that, this uses
+  `wire:click` directly, at the cost of losing Filament's built-in
+  confirmation modals (replaced with a plain JS `confirm()`).
+- **OAuth flow** — routes are registered via a `RouteServiceProvider` under
+  `web`+`auth` middleware. Clicking "Connect" stashes `server_id`/`user_id`
+  and a random `state` value in the session, then redirects to
+  Microsoft/Google. The callback checks `state` against session (CSRF
+  protection — which server this is for never round-trips through the
+  browser), exchanges the code for tokens, and stores them encrypted. The
+  sync job refreshes the access token automatically once it's within a
+  minute of expiring.
+
+</details>
+
+<details>
+<summary>Upgrading from 1.0.0 (the old admin-only SFTP tab)</summary>
+
+<br>
+
+1.1.0 moved configuration out of Admin → Servers → *server* entirely and
+into the client panel, and added WebDAV as a second protocol. Any targets
+configured under 1.0.0 keep working unchanged — just update normally, no
+data is lost. The admin-side tab and header action are gone; use the client
+panel instead.
+
+</details>
+
+## Notes
+
+- One destination per server, one protocol at a time.
+- Remote layout: `<remote_path>/<server-uuid>/<backup-uuid>.tar.gz` for
+  SFTP/WebDAV/OneDrive. Google Drive has no real path concept, so
+  `remote_path` is treated as a folder name, resolved or created on first
+  upload.
+- If a sync fails, the full error — including the real underlying cause,
+  not just a generic wrapper message — is stored on the sync log and on the
+  target's `last_error`, visible right on the Backup Sync page.
+- Failed jobs retry up to 3 times, then stay failed — rerun with "Sync
+  missing backups now" once the underlying issue is fixed.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
