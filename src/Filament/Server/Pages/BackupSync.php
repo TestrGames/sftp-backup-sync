@@ -271,8 +271,13 @@ class BackupSync extends ServerFormPage
 
     private function actionsBarHtml(): Htmlable
     {
+        // Based on the persisted target, not live/unsaved form state ($this->form
+        // isn't resolvable yet here -- this runs while form() is still building
+        // the schema that $this->form itself is built from). Practical effect:
+        // switching the Protocol select shows/hides Connect after a Save, not
+        // instantly -- acceptable, and the status text already says so.
         $target = $this->currentTarget();
-        $protocol = $this->currentProtocol();
+        $protocol = $target?->protocol ?? 'sftp';
         $isOAuthProtocol = in_array($protocol, CloudOAuthProviderFactory::oauthProtocols(), true);
 
         $showSync = (bool) $target?->enabled;
@@ -331,11 +336,6 @@ class BackupSync extends ServerFormPage
             'connectUrl' => $connectUrl,
             'connectLabel' => $connectLabel,
         ]);
-    }
-
-    private function currentProtocol(): ?string
-    {
-        return $this->form->getRawState()['protocol'] ?? null;
     }
 
     private function oauthStatusText(): string
