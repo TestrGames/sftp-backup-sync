@@ -155,6 +155,11 @@ class PushBackupToSftp implements ShouldQueue
 
             if (!$success && filled($target->discord_ping_role_id)) {
                 $payload['content'] = $this->formatDiscordMention($target->discord_ping_role_id);
+                // Discord does not reliably parse mentions found in `content`
+                // into actual pings unless the payload explicitly allows it --
+                // without this, the role name/embed can show up with no
+                // notification actually firing for anyone.
+                $payload['allowed_mentions'] = $this->allowedMentionsFor($target->discord_ping_role_id);
             }
 
             Http::timeout(10)->post($target->discord_webhook_url, $payload);
@@ -163,6 +168,27 @@ class PushBackupToSftp implements ShouldQueue
             // retry the actual sync job.
             Log::warning("sftp-backup-sync: failed to send Discord notification for backup {$this->backup->uuid}: {$exception->getMessage()}");
         }
+    }
+
+    /**
+     * @return array{parse?: string[], roles?: string[]}
+     */
+    private function allowedMentionsFor(string $rawValue): array
+    {
+        $rawValue = trim($rawValue);
+
+        if (strcasecmp($rawValue, 'everyone') === 0 || strcasecmp($rawValue, 'here') === 0) {
+            return ['parse' => ['everyone']];
+        }
+
+        if (ctype_digit($rawValue)) {
+            return ['roles' => [$rawValue]];
+        }
+
+        // Whatever was typed doesn't match either known shorthand, so we
+        // don't know what kind of mention is embedded in it -- allow every
+        // mention type rather than silently pinging no one.
+        return ['parse' => ['everyone', 'roles', 'users']];
     }
 
     /**
