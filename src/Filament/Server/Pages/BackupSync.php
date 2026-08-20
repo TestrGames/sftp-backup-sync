@@ -174,6 +174,11 @@ class BackupSync extends ServerFormPage
                                     ->label('Notify on success'),
                                 Toggle::make('notify_on_failure')
                                     ->label('Notify on failure'),
+                                TextInput::make('discord_ping_role_id')
+                                    ->label('Ping role on failure')
+                                    ->placeholder('123456789012345678, everyone, or here')
+                                    ->helperText('Discord role ID to ping when a sync fails. Leave blank for no ping (the embed still posts either way).')
+                                    ->columnSpanFull(),
                             ]),
 
                         // Deliberately NOT a Filament Action (footerActions / header
@@ -203,6 +208,7 @@ class BackupSync extends ServerFormPage
             'remote_path' => $target?->remote_path ?? '/',
             'notify_on_success' => $target?->notify_on_success ?? false,
             'notify_on_failure' => $target?->notify_on_failure ?? true,
+            'discord_ping_role_id' => $target?->discord_ping_role_id,
             // password / private_key / passphrase / discord_webhook_url are
             // intentionally left out: an encrypted secret is never sent back
             // down to the browser, and a blank field means "keep what's
@@ -227,6 +233,7 @@ class BackupSync extends ServerFormPage
             'remote_path' => filled($state['remote_path'] ?? null) ? $state['remote_path'] : '/',
             'notify_on_success' => (bool) ($state['notify_on_success'] ?? false),
             'notify_on_failure' => (bool) ($state['notify_on_failure'] ?? true),
+            'discord_ping_role_id' => filled($state['discord_ping_role_id'] ?? null) ? trim($state['discord_ping_role_id']) : null,
         ];
 
         foreach (['password', 'private_key', 'passphrase', 'discord_webhook_url'] as $secretField) {

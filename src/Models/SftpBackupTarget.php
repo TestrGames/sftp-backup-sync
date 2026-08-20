@@ -31,6 +31,7 @@ class SftpBackupTarget extends Model
         'discord_webhook_url',
         'notify_on_success',
         'notify_on_failure',
+        'discord_ping_role_id',
         'last_synced_at',
         'last_error',
     ];

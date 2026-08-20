@@ -126,7 +126,7 @@ class PushBackupToSftp implements ShouldQueue
         }
 
         try {
-            Http::timeout(10)->post($target->discord_webhook_url, [
+            $payload = [
                 'embeds' => [array_filter([
                     'title' => $success ? '✅ Backup synced' : '❌ Backup sync failed',
                     'color' => $success ? 0x57F287 : 0xED4245,
@@ -151,12 +151,36 @@ class PushBackupToSftp implements ShouldQueue
                     'timestamp' => now()->toIso8601String(),
                     'footer' => ['text' => 'SFTP Backup Sync'],
                 ])],
-            ]);
+            ];
+
+            if (!$success && filled($target->discord_ping_role_id)) {
+                $payload['content'] = $this->formatDiscordMention($target->discord_ping_role_id);
+            }
+
+            Http::timeout(10)->post($target->discord_webhook_url, $payload);
         } catch (Throwable $exception) {
             // Best-effort only -- a broken/invalid webhook must never fail or
             // retry the actual sync job.
             Log::warning("sftp-backup-sync: failed to send Discord notification for backup {$this->backup->uuid}: {$exception->getMessage()}");
         }
+    }
+
+    /**
+     * Accepts a raw Discord role ID (the common case, copied from Discord's
+     * "Copy Role ID" context menu), or the literal words "everyone"/"here"
+     * for those broader pings, or -- if it already looks like a full
+     * mention/anything else -- passes it through unchanged.
+     */
+    private function formatDiscordMention(string $value): string
+    {
+        $value = trim($value);
+
+        return match (true) {
+            strcasecmp($value, 'everyone') === 0 => '@everyone',
+            strcasecmp($value, 'here') === 0 => '@here',
+            ctype_digit($value) => "<@&{$value}>",
+            default => $value,
+        };
     }
 
     /**

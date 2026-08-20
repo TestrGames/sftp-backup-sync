@@ -24,7 +24,8 @@ Google Drive. Nobody else on the panel can see or touch that configuration.
   last error (the real cause, not a generic wrapper message), and recent
   attempt history
 - **Discord notifications** — optional per-server webhook, separately
-  toggleable for successes and failures
+  toggleable for successes and failures, with an optional role/`@everyone`/
+  `@here` ping on failure
 - **Delegatable** — grant a subuser the "Backup Sync" permission if the owner
   wants to share the responsibility
 
@@ -180,7 +181,13 @@ separately from anything `optimize:clear` touches.
   after *all* retries (`$tries = 3`) are exhausted, so a flaky destination
   doesn't send three pings for one real failure. Sending the notification
   itself is wrapped in its own try/catch — a broken webhook URL can never
-  fail or retry the sync job.
+  fail or retry the sync job. Embeds alone don't ping anyone in Discord —
+  pinging requires a role/`@everyone`/`@here` mention in the plain message
+  `content` field, so on failure (only), if a role is configured, the
+  webhook payload gets a `content` field alongside the embed:
+  `discord_ping_role_id` accepts a raw role ID (wrapped as `<@&id>`), the
+  literal words `everyone`/`here`, or anything else is passed through as-is
+  if you'd rather type the full mention syntax yourself.
 
 </details>
 
@@ -212,6 +219,9 @@ panel instead.
 - Discord notifications are per-server (own webhook per destination), off
   by default for successes and on by default for failures — toggle either
   independently on the Backup Sync page.
+- The failure ping only pings — it doesn't gate whether the embed itself
+  posts. Leaving the role field blank still sends the failure embed, just
+  without a ping alongside it.
 
 ## License
 
