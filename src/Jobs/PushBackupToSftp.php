@@ -11,6 +11,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use League\Flysystem\Filesystem;
 use League\Flysystem\PhpseclibV3\SftpAdapter;
 use League\Flysystem\PhpseclibV3\SftpConnectionProvider;
@@ -76,6 +77,10 @@ class PushBackupToSftp implements ShouldQueue
 
             $log->update(['status' => 'success', 'error' => null, 'synced_at' => now()]);
             $target->update(['last_synced_at' => now(), 'last_error' => null]);
+
+            if ($target->notify_on_success) {
+                $this->sendDiscordNotification($target, success: true);
+            }
         } catch (Throwable $exception) {
             $fullMessage = $this->describeException($exception);
 
@@ -89,6 +94,68 @@ class PushBackupToSftp implements ShouldQueue
             if (file_exists($tmpPath)) {
                 unlink($tmpPath);
             }
+        }
+    }
+
+    /**
+     * Laravel calls this automatically exactly once, after the job has
+     * exhausted all of its retries ($tries) -- not on every individual
+     * attempt. That's deliberate: the catch block in handle() runs (and
+     * updates last_error) on every attempt since it's cheap and purely
+     * informational, but a Discord ping should only happen once the sync
+     * has genuinely, finally failed, not once per retry.
+     */
+    public function failed(Throwable $exception): void
+    {
+        $target = SftpBackupTarget::query()
+            ->where('server_id', $this->backup->server_id)
+            ->where('enabled', true)
+            ->first();
+
+        if (!$target || !$target->notify_on_failure) {
+            return;
+        }
+
+        $this->sendDiscordNotification($target, success: false, message: $this->describeException($exception));
+    }
+
+    private function sendDiscordNotification(SftpBackupTarget $target, bool $success, ?string $message = null): void
+    {
+        if (!$target->discord_webhook_url) {
+            return;
+        }
+
+        try {
+            Http::timeout(10)->post($target->discord_webhook_url, [
+                'embeds' => [array_filter([
+                    'title' => $success ? '✅ Backup synced' : '❌ Backup sync failed',
+                    'color' => $success ? 0x57F287 : 0xED4245,
+                    'fields' => array_values(array_filter([
+                        [
+                            'name' => 'Server',
+                            'value' => $this->backup->server?->name ?? "#{$this->backup->server_id}",
+                            'inline' => true,
+                        ],
+                        [
+                            'name' => 'Destination',
+                            'value' => ucfirst(str_replace('_', ' ', $target->protocol)),
+                            'inline' => true,
+                        ],
+                        [
+                            'name' => 'Backup',
+                            'value' => $this->backup->name ?: $this->backup->uuid,
+                            'inline' => true,
+                        ],
+                        $message ? ['name' => 'Error', 'value' => Str::limit($message, 1000)] : null,
+                    ])),
+                    'timestamp' => now()->toIso8601String(),
+                    'footer' => ['text' => 'SFTP Backup Sync'],
+                ])],
+            ]);
+        } catch (Throwable $exception) {
+            // Best-effort only -- a broken/invalid webhook must never fail or
+            // retry the actual sync job.
+            Log::warning("sftp-backup-sync: failed to send Discord notification for backup {$this->backup->uuid}: {$exception->getMessage()}");
         }
     }
 

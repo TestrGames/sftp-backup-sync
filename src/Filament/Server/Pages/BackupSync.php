@@ -159,6 +159,23 @@ class BackupSync extends ServerFormPage
                             ->default('/')
                             ->columnSpanFull(),
 
+                        Fieldset::make('Discord notifications')
+                            ->columnSpanFull()
+                            ->columns(2)
+                            ->schema([
+                                TextInput::make('discord_webhook_url')
+                                    ->label('Webhook URL')
+                                    ->url()
+                                    ->placeholder('https://discord.com/api/webhooks/...')
+                                    ->dehydrated(fn (?string $state) => filled($state))
+                                    ->helperText('Leave blank to keep the currently stored URL. Notifications only send if enabled below.')
+                                    ->columnSpanFull(),
+                                Toggle::make('notify_on_success')
+                                    ->label('Notify on success'),
+                                Toggle::make('notify_on_failure')
+                                    ->label('Notify on failure'),
+                            ]),
+
                         // Deliberately NOT a Filament Action (footerActions / header
                         // actions / schema Actions component all failed to render on
                         // this panel install -- something about Action rendering
@@ -184,9 +201,12 @@ class BackupSync extends ServerFormPage
             'username' => $target?->username,
             'auth_method' => $target?->auth_method ?? 'password',
             'remote_path' => $target?->remote_path ?? '/',
-            // password / private_key / passphrase are intentionally left out: an
-            // encrypted secret is never sent back down to the browser, and a blank
-            // field means "keep what's already stored" (see saveTarget()).
+            'notify_on_success' => $target?->notify_on_success ?? false,
+            'notify_on_failure' => $target?->notify_on_failure ?? true,
+            // password / private_key / passphrase / discord_webhook_url are
+            // intentionally left out: an encrypted secret is never sent back
+            // down to the browser, and a blank field means "keep what's
+            // already stored" (see saveTarget()).
         ]);
     }
 
@@ -205,9 +225,11 @@ class BackupSync extends ServerFormPage
             'username' => $state['username'] ?? null,
             'auth_method' => $state['auth_method'] ?? 'password',
             'remote_path' => filled($state['remote_path'] ?? null) ? $state['remote_path'] : '/',
+            'notify_on_success' => (bool) ($state['notify_on_success'] ?? false),
+            'notify_on_failure' => (bool) ($state['notify_on_failure'] ?? true),
         ];
 
-        foreach (['password', 'private_key', 'passphrase'] as $secretField) {
+        foreach (['password', 'private_key', 'passphrase', 'discord_webhook_url'] as $secretField) {
             if (filled($state[$secretField] ?? null)) {
                 $payload[$secretField] = $state[$secretField];
             }

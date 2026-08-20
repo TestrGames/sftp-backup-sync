@@ -23,6 +23,8 @@ Google Drive. Nobody else on the panel can see or touch that configuration.
 - **Visible status** — a panel on the page shows the last successful sync, the
   last error (the real cause, not a generic wrapper message), and recent
   attempt history
+- **Discord notifications** — optional per-server webhook, separately
+  toggleable for successes and failures
 - **Delegatable** — grant a subuser the "Backup Sync" permission if the owner
   wants to share the responsibility
 
@@ -170,6 +172,15 @@ separately from anything `optimize:clear` touches.
   browser), exchanges the code for tokens, and stores them encrypted. The
   sync job refreshes the access token automatically once it's within a
   minute of expiring.
+- **Discord notifications** — sent as a rich embed via a plain webhook POST
+  (`Http::post($webhookUrl, ['embeds' => [...]])`), no Discord SDK. Success
+  fires inline in `handle()` (runs once, doesn't retry). Failure fires from
+  the job's `failed()` method instead of the `catch` block in `handle()` —
+  `failed()` is a Laravel queue lifecycle hook that runs exactly once,
+  after *all* retries (`$tries = 3`) are exhausted, so a flaky destination
+  doesn't send three pings for one real failure. Sending the notification
+  itself is wrapped in its own try/catch — a broken webhook URL can never
+  fail or retry the sync job.
 
 </details>
 
@@ -198,6 +209,9 @@ panel instead.
   target's `last_error`, visible right on the Backup Sync page.
 - Failed jobs retry up to 3 times, then stay failed — rerun with "Sync
   missing backups now" once the underlying issue is fixed.
+- Discord notifications are per-server (own webhook per destination), off
+  by default for successes and on by default for failures — toggle either
+  independently on the Backup Sync page.
 
 ## License
 

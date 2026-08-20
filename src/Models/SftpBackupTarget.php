@@ -28,6 +28,9 @@ class SftpBackupTarget extends Model
         'oauth_refresh_token',
         'oauth_expires_at',
         'oauth_account_label',
+        'discord_webhook_url',
+        'notify_on_success',
+        'notify_on_failure',
         'last_synced_at',
         'last_error',
     ];
@@ -43,6 +46,9 @@ class SftpBackupTarget extends Model
             'oauth_access_token' => 'encrypted',
             'oauth_refresh_token' => 'encrypted',
             'oauth_expires_at' => 'datetime',
+            'discord_webhook_url' => 'encrypted',
+            'notify_on_success' => 'boolean',
+            'notify_on_failure' => 'boolean',
             'last_synced_at' => 'datetime',
         ];
     }
