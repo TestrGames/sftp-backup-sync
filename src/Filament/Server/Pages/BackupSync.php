@@ -5,6 +5,7 @@ namespace Lisak\SftpBackupSync\Filament\Server\Pages;
 use App\Filament\Server\Pages\ServerFormPage;
 use App\Models\Backup;
 use BackedEnum;
+use DateTimeZone;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -159,6 +160,15 @@ class BackupSync extends ServerFormPage
                             ->default('/')
                             ->columnSpanFull(),
 
+                        Select::make('filename_timezone')
+                            ->label('Timestamp timezone')
+                            ->options($this->timezoneOptions())
+                            ->default('profile')
+                            ->searchable()
+                            ->native(false)
+                            ->helperText('Uploaded backups are named servername-YYYY-MM-DD_HHMMSS.tar.gz — this picks the timezone that timestamp is written in.')
+                            ->columnSpanFull(),
+
                         Fieldset::make('Discord notifications')
                             ->columnSpanFull()
                             ->columns(2)
@@ -193,6 +203,35 @@ class BackupSync extends ServerFormPage
             ]);
     }
 
+    /**
+     * 'profile' is resolved at upload time from the server owner's panel
+     * profile, so it keeps following that setting instead of freezing
+     * whatever it happened to be when this form was saved. The owner's
+     * current value is shown in the label so the choice is not blind --
+     * and it names the owner specifically because a subuser configuring
+     * this would otherwise reasonably read "profile" as their own.
+     *
+     * The rest of the list is PHP's full identifier set, the same source
+     * Pelican validates its own profile timezone against, rather than a
+     * hand-picked shortlist that would inevitably miss someone's zone.
+     *
+     * @return array<string, string>
+     */
+    protected function timezoneOptions(): array
+    {
+        $ownerTimezone = $this->getRecord()->user?->timezone ?: 'UTC';
+
+        $identifiers = collect(DateTimeZone::listIdentifiers())
+            ->mapWithKeys(fn (string $timezone) => [$timezone => $timezone])
+            ->all();
+
+        return [
+            'profile' => "Follow the server owner's profile (currently {$ownerTimezone})",
+            'UTC' => 'UTC',
+            ...$identifiers,
+        ];
+    }
+
     protected function fillForm(): void
     {
         $target = SftpBackupTarget::query()->where('server_id', $this->getRecord()->id)->first();
@@ -206,6 +245,7 @@ class BackupSync extends ServerFormPage
             'username' => $target?->username,
             'auth_method' => $target?->auth_method ?? 'password',
             'remote_path' => $target?->remote_path ?? '/',
+            'filename_timezone' => $target?->filename_timezone ?: 'profile',
             'notify_on_success' => $target?->notify_on_success ?? false,
             'notify_on_failure' => $target?->notify_on_failure ?? true,
             'discord_ping_role_id' => $target?->discord_ping_role_id,
@@ -231,6 +271,7 @@ class BackupSync extends ServerFormPage
             'username' => $state['username'] ?? null,
             'auth_method' => $state['auth_method'] ?? 'password',
             'remote_path' => filled($state['remote_path'] ?? null) ? $state['remote_path'] : '/',
+            'filename_timezone' => filled($state['filename_timezone'] ?? null) ? $state['filename_timezone'] : 'profile',
             'notify_on_success' => (bool) ($state['notify_on_success'] ?? false),
             'notify_on_failure' => (bool) ($state['notify_on_failure'] ?? true),
             'discord_ping_role_id' => filled($state['discord_ping_role_id'] ?? null) ? trim($state['discord_ping_role_id']) : null,

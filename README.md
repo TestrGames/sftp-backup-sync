@@ -211,7 +211,10 @@ panel instead.
   for SFTP/WebDAV/OneDrive. The server name is slugged (lowercase, dashes,
   diacritics folded) so it is safe as a path segment, and falls back to the
   server UUID if the name slugs down to nothing. The timestamp is the
-  backup's creation time. Google Drive has no real path concept, so
+  backup's creation time, written in the timezone picked under "Timestamp
+  timezone" — either a specific zone, or the server owner's panel profile
+  timezone (the default, resolved at upload time so it follows later
+  profile changes). Google Drive has no real path concept, so
   `remote_path` is treated as a folder name, resolved or created on first
   upload.
 - If a sync fails, the full error — including the real underlying cause,

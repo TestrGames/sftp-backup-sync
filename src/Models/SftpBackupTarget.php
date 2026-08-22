@@ -24,6 +24,7 @@ class SftpBackupTarget extends Model
         'private_key',
         'passphrase',
         'remote_path',
+        'filename_timezone',
         'oauth_access_token',
         'oauth_refresh_token',
         'oauth_expires_at',

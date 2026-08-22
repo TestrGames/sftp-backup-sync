@@ -4,6 +4,7 @@ namespace Lisak\SftpBackupSync\Jobs;
 
 use App\Extensions\BackupAdapter\BackupAdapterService;
 use App\Models\Backup;
+use DateTimeZone;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -249,11 +250,43 @@ class PushBackupToSftp implements ShouldQueue
      * date because several backups a day is normal, and same-day backups
      * sharing a name would silently overwrite each other.
      */
-    private function remoteFileName(): string
+    private function remoteFileName(SftpBackupTarget $target): string
     {
-        $timestamp = ($this->backup->created_at ?? now())->format('Y-m-d_His');
+        // copy() first: Eloquent hands back a *mutable* Carbon, so calling
+        // setTimezone() on it directly would rewrite $backup->created_at in
+        // memory for everything downstream of this job.
+        $timestamp = ($this->backup->created_at ?? now())
+            ->copy()
+            ->setTimezone($this->filenameTimezone($target))
+            ->format('Y-m-d_His');
 
         return $this->serverSlug() . '-' . $timestamp . '.tar.gz';
+    }
+
+    /**
+     * 'profile' means "whatever the server owner has set on their panel
+     * profile", resolved here rather than frozen at save time so that
+     * changing it in the profile also changes future backup names. Anything
+     * else is a stored timezone identifier.
+     *
+     * Every result is validated against the real identifier list before it
+     * reaches setTimezone(), which throws on an unknown zone. A bad value --
+     * a profile timezone that a panel upgrade stopped recognising, a row
+     * hand-edited in the database -- must not be able to fail the upload:
+     * the backup still being copied off-site matters far more than the
+     * timestamp being in the requested zone, so we fall back to UTC.
+     */
+    private function filenameTimezone(SftpBackupTarget $target): string
+    {
+        $configured = $target->filename_timezone ?: 'profile';
+
+        $timezone = $configured === 'profile'
+            ? (string) ($this->backup->server?->user?->timezone ?? '')
+            : $configured;
+
+        return in_array($timezone, DateTimeZone::listIdentifiers(), true)
+            ? $timezone
+            : 'UTC';
     }
 
     private function serverSlug(): string
@@ -283,7 +316,7 @@ class PushBackupToSftp implements ShouldQueue
         throw_unless($stream, new RuntimeException('Could not open downloaded backup for reading.'));
 
         try {
-            $remotePath = $this->remoteDirectory() . '/' . $this->remoteFileName();
+            $remotePath = $this->remoteDirectory() . '/' . $this->remoteFileName($target);
             $filesystem->writeStream($remotePath, $stream);
         } finally {
             if (is_resource($stream)) {
@@ -316,7 +349,7 @@ class PushBackupToSftp implements ShouldQueue
             $this->webDavRequest($target, 'MKCOL', $baseUri . $path . '/', [200, 201, 405]);
         }
 
-        $fileUrl = $baseUri . $path . '/' . rawurlencode($this->remoteFileName());
+        $fileUrl = $baseUri . $path . '/' . rawurlencode($this->remoteFileName($target));
 
         $stream = fopen($tmpPath, 'r');
         throw_unless($stream, new RuntimeException('Could not open downloaded backup for reading.'));
@@ -358,7 +391,7 @@ class PushBackupToSftp implements ShouldQueue
 
         $remotePath = trim($target->remote_path ?: '', '/') . '/'
             . $this->remoteDirectory() . '/'
-            . $this->remoteFileName();
+            . $this->remoteFileName($target);
 
         $provider->upload($accessToken, ltrim($remotePath, '/'), $tmpPath);
     }
