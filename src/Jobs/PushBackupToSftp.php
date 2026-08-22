@@ -228,6 +228,43 @@ class PushBackupToSftp implements ShouldQueue
         return implode(' | caused by: ', $parts);
     }
 
+    /**
+     * Backups used to land as "<server-uuid>/<backup-uuid>.tar.gz", which
+     * tells you nothing when you are staring at a folder listing on the
+     * destination. Both the folder and the file are named after the server
+     * instead. A server name is free-form (spaces, diacritics, slashes), so
+     * it gets slugged before it can become a path segment, and we fall back
+     * to the UUID if slugging leaves nothing usable -- e.g. a name written
+     * entirely in a script Str::slug() strips.
+     */
+    private function remoteDirectory(): string
+    {
+        return $this->serverSlug();
+    }
+
+    /**
+     * The timestamp is the backup's own creation time (not "now"), so a
+     * re-synced or retried backup keeps the same name instead of landing
+     * twice under two different ones. It carries the time as well as the
+     * date because several backups a day is normal, and same-day backups
+     * sharing a name would silently overwrite each other.
+     */
+    private function remoteFileName(): string
+    {
+        $timestamp = ($this->backup->created_at ?? now())->format('Y-m-d_His');
+
+        return $this->serverSlug() . '-' . $timestamp . '.tar.gz';
+    }
+
+    private function serverSlug(): string
+    {
+        $slug = Str::slug((string) $this->backup->server?->name);
+
+        return $slug !== ''
+            ? $slug
+            : trim((string) $this->backup->server?->uuid, '/');
+    }
+
     private function pushViaSftp(SftpBackupTarget $target, string $tmpPath): void
     {
         $provider = new SftpConnectionProvider(
@@ -246,7 +283,7 @@ class PushBackupToSftp implements ShouldQueue
         throw_unless($stream, new RuntimeException('Could not open downloaded backup for reading.'));
 
         try {
-            $remotePath = trim($this->backup->server->uuid, '/') . '/' . $this->backup->uuid . '.tar.gz';
+            $remotePath = $this->remoteDirectory() . '/' . $this->remoteFileName();
             $filesystem->writeStream($remotePath, $stream);
         } finally {
             if (is_resource($stream)) {
@@ -269,7 +306,7 @@ class PushBackupToSftp implements ShouldQueue
         $baseUri = rtrim((string) $target->base_url, '/');
 
         $segments = array_values(array_filter(
-            explode('/', trim($target->remote_path ?: '', '/') . '/' . trim($this->backup->server->uuid, '/')),
+            explode('/', trim($target->remote_path ?: '', '/') . '/' . $this->remoteDirectory()),
             fn (string $segment) => $segment !== '',
         ));
 
@@ -279,7 +316,7 @@ class PushBackupToSftp implements ShouldQueue
             $this->webDavRequest($target, 'MKCOL', $baseUri . $path . '/', [200, 201, 405]);
         }
 
-        $fileUrl = $baseUri . $path . '/' . rawurlencode($this->backup->uuid . '.tar.gz');
+        $fileUrl = $baseUri . $path . '/' . rawurlencode($this->remoteFileName());
 
         $stream = fopen($tmpPath, 'r');
         throw_unless($stream, new RuntimeException('Could not open downloaded backup for reading.'));
@@ -320,8 +357,8 @@ class PushBackupToSftp implements ShouldQueue
         $accessToken = $this->ensureFreshAccessToken($target, $provider);
 
         $remotePath = trim($target->remote_path ?: '', '/') . '/'
-            . trim($this->backup->server->uuid, '/') . '/'
-            . $this->backup->uuid . '.tar.gz';
+            . $this->remoteDirectory() . '/'
+            . $this->remoteFileName();
 
         $provider->upload($accessToken, ltrim($remotePath, '/'), $tmpPath);
     }
