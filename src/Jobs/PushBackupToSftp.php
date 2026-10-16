@@ -4,6 +4,7 @@ namespace Lisak\SftpBackupSync\Jobs;
 
 use App\Extensions\BackupAdapter\BackupAdapterService;
 use App\Models\Backup;
+use App\Services\Backups\DeleteBackupService;
 use DateTimeZone;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -82,6 +83,8 @@ class PushBackupToSftp implements ShouldQueue
             if ($target->notify_on_success) {
                 $this->sendDiscordNotification($target, success: true);
             }
+
+            $this->pruneLocalBackups($target);
         } catch (Throwable $exception) {
             $fullMessage = $this->describeException($exception);
 
@@ -95,6 +98,54 @@ class PushBackupToSftp implements ShouldQueue
             if (file_exists($tmpPath)) {
                 unlink($tmpPath);
             }
+        }
+    }
+
+    /**
+     * Keeps only the newest N backups on the panel, but only ever deletes
+     * ones that are confirmed to have synced successfully to this target --
+     * a backup that exists nowhere else is never removed, however old.
+     * Locked backups are left alone too. The newest N are counted across all
+     * successful backups of the server, not just the synced ones, so a
+     * failed sync can never cause more to be kept or fewer to be protected.
+     *
+     * Best-effort: the upload already succeeded, so a failure here is logged
+     * and must not fail or retry the job.
+     */
+    private function pruneLocalBackups(SftpBackupTarget $target): void
+    {
+        $keep = (int) $target->keep_local_backups;
+
+        if ($keep < 1) {
+            return;
+        }
+
+        try {
+            $syncedIds = BackupSyncLog::query()
+                ->where('sftp_backup_target_id', $target->id)
+                ->where('status', 'success')
+                ->pluck('backup_id');
+
+            $candidates = Backup::query()
+                ->where('server_id', $this->backup->server_id)
+                ->where('is_successful', true)
+                ->orderByDesc('created_at')
+                ->orderByDesc('id')
+                ->get()
+                ->slice($keep)
+                ->filter(fn (Backup $backup) => $syncedIds->contains($backup->id) && !$backup->is_locked);
+
+            $deleter = app(DeleteBackupService::class);
+
+            foreach ($candidates as $backup) {
+                try {
+                    $deleter->handle($backup);
+                } catch (Throwable $exception) {
+                    Log::warning("sftp-backup-sync: could not prune local backup {$backup->uuid}: {$exception->getMessage()}");
+                }
+            }
+        } catch (Throwable $exception) {
+            Log::warning("sftp-backup-sync: local backup pruning failed for server {$this->backup->server_id}: {$exception->getMessage()}");
         }
     }
 

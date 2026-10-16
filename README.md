@@ -217,6 +217,11 @@ panel instead.
   profile changes). Google Drive has no real path concept, so
   `remote_path` is treated as a folder name, resolved or created on first
   upload.
+- "Keep last backups on the panel" (optional): after a successful sync, the
+  panel keeps only the N newest backups of the server and deletes older
+  ones. Only backups already synced successfully to the destination are
+  deleted, locked backups are skipped, and blank means keep everything.
+  Remote copies are never touched.
 - If a sync fails, the full error — including the real underlying cause,
   not just a generic wrapper message — is stored on the sync log and on the
   target's `last_error`, visible right on the Backup Sync page.

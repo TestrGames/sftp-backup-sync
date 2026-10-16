@@ -25,6 +25,7 @@ class SftpBackupTarget extends Model
         'passphrase',
         'remote_path',
         'filename_timezone',
+        'keep_local_backups',
         'oauth_access_token',
         'oauth_refresh_token',
         'oauth_expires_at',
@@ -42,6 +43,7 @@ class SftpBackupTarget extends Model
         return [
             'enabled' => 'boolean',
             'port' => 'integer',
+            'keep_local_backups' => 'integer',
             'password' => 'encrypted',
             'private_key' => 'encrypted',
             'passphrase' => 'encrypted',

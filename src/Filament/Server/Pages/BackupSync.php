@@ -169,6 +169,15 @@ class BackupSync extends ServerFormPage
                             ->helperText('Uploaded backups are named servername-YYYY-MM-DD_HHMMSS.tar.gz — this picks the timezone that timestamp is written in.')
                             ->columnSpanFull(),
 
+                        TextInput::make('keep_local_backups')
+                            ->label('Keep last backups on the panel')
+                            ->numeric()
+                            ->integer()
+                            ->minValue(1)
+                            ->placeholder('Keep all')
+                            ->helperText('After a successful sync, older backups of this server are deleted from the panel, keeping this many of the newest. Only backups already synced to this destination are ever deleted; locked backups are skipped. Leave blank to keep everything.')
+                            ->columnSpanFull(),
+
                         Fieldset::make('Discord notifications')
                             ->columnSpanFull()
                             ->columns(2)
@@ -246,6 +255,7 @@ class BackupSync extends ServerFormPage
             'auth_method' => $target?->auth_method ?? 'password',
             'remote_path' => $target?->remote_path ?? '/',
             'filename_timezone' => $target?->filename_timezone ?: 'profile',
+            'keep_local_backups' => $target?->keep_local_backups,
             'notify_on_success' => $target?->notify_on_success ?? false,
             'notify_on_failure' => $target?->notify_on_failure ?? true,
             'discord_ping_role_id' => $target?->discord_ping_role_id,
@@ -272,6 +282,7 @@ class BackupSync extends ServerFormPage
             'auth_method' => $state['auth_method'] ?? 'password',
             'remote_path' => filled($state['remote_path'] ?? null) ? $state['remote_path'] : '/',
             'filename_timezone' => filled($state['filename_timezone'] ?? null) ? $state['filename_timezone'] : 'profile',
+            'keep_local_backups' => filled($state['keep_local_backups'] ?? null) ? max(1, (int) $state['keep_local_backups']) : null,
             'notify_on_success' => (bool) ($state['notify_on_success'] ?? false),
             'notify_on_failure' => (bool) ($state['notify_on_failure'] ?? true),
             'discord_ping_role_id' => filled($state['discord_ping_role_id'] ?? null) ? trim($state['discord_ping_role_id']) : null,
