@@ -14,13 +14,12 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use League\Flysystem\Filesystem;
-use League\Flysystem\PhpseclibV3\SftpAdapter;
-use League\Flysystem\PhpseclibV3\SftpConnectionProvider;
 use Lisak\SftpBackupSync\Models\BackupSyncLog;
 use Lisak\SftpBackupSync\Models\SftpBackupTarget;
 use Lisak\SftpBackupSync\Support\OAuth\CloudOAuthProvider;
 use Lisak\SftpBackupSync\Support\OAuth\CloudOAuthProviderFactory;
+use phpseclib4\Crypt\PublicKeyLoader;
+use phpseclib4\Net\SFTP;
 use RuntimeException;
 use Throwable;
 
@@ -349,30 +348,34 @@ class PushBackupToSftp implements ShouldQueue
             : trim((string) $this->backup->server?->uuid, '/');
     }
 
+    /**
+     * Talks to phpseclib directly instead of through league/flysystem-sftp-v3:
+     * that adapter is pinned to phpseclib ^3, while the panel itself requires
+     * ^4, so Composer cannot install both. phpseclib 4 ships with the panel.
+     */
     private function pushViaSftp(SftpBackupTarget $target, string $tmpPath): void
     {
-        $provider = new SftpConnectionProvider(
-            host: $target->host,
-            username: $target->username,
-            password: $target->auth_method === 'password' ? $target->password : null,
-            privateKey: $target->auth_method === 'private_key' ? $target->private_key : null,
-            passphrase: $target->passphrase ?: null,
-            port: $target->port,
-            timeout: 30,
-        );
-
-        $filesystem = new Filesystem(new SftpAdapter($provider, $target->remote_path ?: '/'));
-
-        $stream = fopen($tmpPath, 'r');
-        throw_unless($stream, new RuntimeException('Could not open downloaded backup for reading.'));
+        $sftp = new SFTP((string) $target->host, (int) ($target->port ?: 22), 30);
 
         try {
-            $remotePath = $this->remoteDirectory() . '/' . $this->remoteFileName($target);
-            $filesystem->writeStream($remotePath, $stream);
-        } finally {
-            if (is_resource($stream)) {
-                fclose($stream);
+            $credential = $target->auth_method === 'private_key'
+                ? PublicKeyLoader::loadPrivateKey((string) $target->private_key, $target->passphrase ?: null)
+                : (string) $target->password;
+
+            throw_unless(
+                $sftp->login((string) $target->username, $credential),
+                new RuntimeException('SFTP login failed — check the username and password/key.'),
+            );
+
+            $directory = rtrim($target->remote_path ?: '/', '/') . '/' . $this->remoteDirectory();
+
+            if (!$sftp->is_dir($directory)) {
+                $sftp->mkdir($directory, -1, true);
             }
+
+            $sftp->put($directory . '/' . $this->remoteFileName($target), $tmpPath, SFTP::SOURCE_LOCAL_FILE);
+        } finally {
+            $sftp->disconnect();
         }
     }
 

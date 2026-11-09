@@ -137,7 +137,7 @@ separately from anything `optimize:clear` touches.
   temporary download link the same way Pelican's own restore/download flow
   does, streams the backup to a temp file, then streams it to the
   destination. Nothing is ever fully buffered in memory.
-  - SFTP uses `league/flysystem-sftp-v3`.
+  - SFTP uses phpseclib 4 directly (the panel already ships it; `league/flysystem-sftp-v3` is pinned to phpseclib 3 and cannot be installed alongside).
   - WebDAV is plain HTTP (`MKCOL` per path segment, then `PUT`) via
     Laravel's `Http` client — deliberately not a library.
     `league/flysystem-webdav` (`Sabre\DAV\Client` underneath) unreliably
